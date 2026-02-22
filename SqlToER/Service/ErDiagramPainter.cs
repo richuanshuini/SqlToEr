@@ -304,20 +304,28 @@ namespace SqlToER.Service
         // ============================================================
 
         /// <summary>
-        /// 画实体 + 伞形属性（1D 属性自动 GlueTo 实体）
+        /// 画实体 + 伞形属性
+        /// centerAngle: 属性扇面的中心方向（弧度），默认朝上 PI/2
         /// </summary>
         public Visio.Shape DrawEntityWithAttrs(
-            string entityName, List<ErAttribute> attrs, double x, double y)
+            string entityName, List<ErAttribute> attrs, double x, double y,
+            double centerAngle = Math.PI / 2)
         {
             var entity = DrawEntity(entityName, x, y);
 
             int n = attrs.Count;
             if (n == 0) return entity;
 
-            double angleStep = Math.PI / (n + 1);
+            // 扇面张角：基于椭圆宽度和半径动态计算，确保不重叠
+            // 相邻属性的弧距 >= 椭圆宽度 * 1.2（留 20% 间隙）
+            double minStep = (_attrW * 1.2) / AttrRadius;
+            double fanSpan = Math.Min(Math.PI, (n + 1) * minStep);
+            double startAngle = centerAngle - fanSpan / 2;
+            double angleStep = fanSpan / (n + 1);
+
             for (int i = 0; i < n; i++)
             {
-                double angle = Math.PI - (i + 1) * angleStep;
+                double angle = startAngle + (i + 1) * angleStep;
                 double ax = x + AttrRadius * Math.Cos(angle);
                 double ay = y + AttrRadius * Math.Sin(angle);
 
@@ -329,18 +337,20 @@ namespace SqlToER.Service
 
         /// <summary>
         /// 画关系菱形 + 两条连线（带基数标注）
+        /// diamondX/Y: 可指定菱形位置（null = 自动计算中点）
         /// </summary>
         public Visio.Shape DrawRelBetween(
             string relName, string cardinality,
-            Visio.Shape entity1, Visio.Shape entity2)
+            Visio.Shape entity1, Visio.Shape entity2,
+            double? diamondX = null, double? diamondY = null)
         {
             double x1 = entity1.get_CellsU("PinX").ResultIU;
             double x2 = entity2.get_CellsU("PinX").ResultIU;
             double y1 = entity1.get_CellsU("PinY").ResultIU;
             double y2 = entity2.get_CellsU("PinY").ResultIU;
 
-            double dx = (x1 + x2) / 2.0;
-            double dy = (y1 + y2) / 2.0 - 1.0;
+            double dx = diamondX ?? (x1 + x2) / 2.0;
+            double dy = diamondY ?? (y1 + y2) / 2.0;
 
             var diamond = DrawRelationship(relName, dx, dy);
 
@@ -355,37 +365,228 @@ namespace SqlToER.Service
         }
 
         // ============================================================
-        // 第 3 层：组合器
+        // 第 3 层：组合器 — ER 星形布局算法
         // ============================================================
+
+        /// <summary>
+        /// 布局结果：每个实体的位置 + 属性扇面方向
+        /// </summary>
+        private record EntityPlacement(double X, double Y, double AttrAngle);
 
         public void DrawErDiagram(ErDocument erDoc, Action<string>? onStatus = null)
         {
-            onStatus?.Invoke("正在绘制实体...");
-            var entityShapes = new Dictionary<string, Visio.Shape>(StringComparer.OrdinalIgnoreCase);
             var attrsByEntity = erDoc.Attributes
                 .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 
-            double curX = EntityStartX;
+            // ---- 步骤1: 计算布局 ----
+            onStatus?.Invoke("正在计算布局...");
+            var layout = CalculateLayout(erDoc);
+
+            // ---- 步骤2: 画实体+属性 ----
+            onStatus?.Invoke("正在绘制实体...");
+            var entityShapes = new Dictionary<string, Visio.Shape>(StringComparer.OrdinalIgnoreCase);
             foreach (var entity in erDoc.Entities)
             {
+                if (!layout.TryGetValue(entity.Name, out var place)) continue;
                 var attrs = attrsByEntity.GetValueOrDefault(entity.Name, []);
-                var shape = DrawEntityWithAttrs(entity.Name, attrs, curX, EntityY);
+                var shape = DrawEntityWithAttrs(entity.Name, attrs,
+                    place.X, place.Y, place.AttrAngle);
                 entityShapes[entity.Name] = shape;
-                curX += EntitySpacing;
             }
 
+            // ---- 步骤3: 画关系菱形+连线 ----
             onStatus?.Invoke("正在绘制关系...");
-            foreach (var rel in erDoc.Relationships)
+            var diamondPositions = CalculateDiamondPositions(erDoc, layout);
+            for (int i = 0; i < erDoc.Relationships.Count; i++)
             {
+                var rel = erDoc.Relationships[i];
                 if (entityShapes.TryGetValue(rel.Entity1, out var s1) &&
                     entityShapes.TryGetValue(rel.Entity2, out var s2))
                 {
-                    DrawRelBetween(rel.Name, rel.Cardinality, s1, s2);
+                    var (dx, dy) = diamondPositions[i];
+                    DrawRelBetween(rel.Name, rel.Cardinality, s1, s2, dx, dy);
                 }
             }
 
             _page.AutoSizeDrawing();
+        }
+
+        /// <summary>
+        /// ER 专用星形布局算法
+        /// 
+        /// 1. 构建邻接图，计算每个实体的度数（连接的关系数量）
+        /// 2. 度数最高的实体做枢纽（中心）
+        /// 3. 与枢纽直接相连的实体放在内圈
+        /// 4. 不与枢纽相连的实体放在外圈
+        /// 5. 属性扇面朝外（远离中心方向）
+        /// </summary>
+        private Dictionary<string, EntityPlacement> CalculateLayout(ErDocument erDoc)
+        {
+            var result = new Dictionary<string, EntityPlacement>(StringComparer.OrdinalIgnoreCase);
+            var entities = erDoc.Entities;
+            var rels = erDoc.Relationships;
+
+            if (entities.Count == 0) return result;
+
+            // === 边缘情况：只有1个实体 ===
+            if (entities.Count == 1)
+            {
+                result[entities[0].Name] = new(EntityStartX, EntityY, Math.PI / 2);
+                return result;
+            }
+
+            // === 边缘情况：无关系 → 水平排列 ===
+            if (rels.Count == 0)
+            {
+                double x = EntityStartX;
+                foreach (var e in entities)
+                {
+                    result[e.Name] = new(x, EntityY, Math.PI / 2);
+                    x += EntitySpacing;
+                }
+                return result;
+            }
+
+            // === 边缘情况：只有2个实体 → 左右排列 ===
+            if (entities.Count == 2)
+            {
+                result[entities[0].Name] = new(EntityStartX, EntityY, Math.PI * 3 / 4);
+                result[entities[1].Name] = new(EntityStartX + EntitySpacing, EntityY, Math.PI / 4);
+                return result;
+            }
+
+            // === 正常情况：3+ 个实体 ===
+
+            // 1. 构建邻接图，计算度数
+            var degree = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var neighbors = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var e in entities)
+            {
+                degree[e.Name] = 0;
+                neighbors[e.Name] = new(StringComparer.OrdinalIgnoreCase);
+            }
+
+            foreach (var rel in rels)
+            {
+                if (degree.ContainsKey(rel.Entity1))
+                {
+                    degree[rel.Entity1]++;
+                    neighbors[rel.Entity1].Add(rel.Entity2);
+                }
+                if (degree.ContainsKey(rel.Entity2))
+                {
+                    degree[rel.Entity2]++;
+                    neighbors[rel.Entity2].Add(rel.Entity1);
+                }
+            }
+
+            // 2. 找枢纽（度数最高的实体）
+            string hub = entities[0].Name;
+            int maxDeg = 0;
+            foreach (var kv in degree)
+            {
+                if (kv.Value > maxDeg)
+                {
+                    maxDeg = kv.Value;
+                    hub = kv.Key;
+                }
+            }
+
+            // 3. 分类：与枢纽直接相连 vs 不相连
+            var connectedToHub = new List<string>();
+            var notConnected = new List<string>();
+            foreach (var e in entities)
+            {
+                if (e.Name.Equals(hub, StringComparison.OrdinalIgnoreCase)) continue;
+                if (neighbors[hub].Contains(e.Name))
+                    connectedToHub.Add(e.Name);
+                else
+                    notConnected.Add(e.Name);
+            }
+
+            // 4. 枢纽在中心
+            double centerX = EntityStartX + (entities.Count - 1) * EntitySpacing / 2.0;
+            double centerY = EntityY;
+            result[hub] = new(centerX, centerY, Math.PI / 2);
+
+            // 5. 与枢纽相连的实体放在圆周上（等角分布）
+            var allPeripheral = new List<string>();
+            allPeripheral.AddRange(connectedToHub);
+            allPeripheral.AddRange(notConnected);
+
+            double radius = EntitySpacing * 1.2;
+            int totalPeripheral = allPeripheral.Count;
+
+            for (int i = 0; i < totalPeripheral; i++)
+            {
+                // 从正上方开始，顺时针均匀分布
+                // 偏移 PI/2 使第一个在正上方
+                double angle = Math.PI / 2.0 + 2.0 * Math.PI * i / totalPeripheral;
+                double ex = centerX + radius * Math.Cos(angle);
+                double ey = centerY + radius * Math.Sin(angle);
+
+                // 属性扇面朝外（从实体指向远离中心的方向）
+                double attrAngle = angle;
+
+                result[allPeripheral[i]] = new(ex, ey, attrAngle);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// 计算每个关系菱形的位置
+        /// 放在两个连接实体的中线上，垂直偏移避免重叠
+        /// </summary>
+        private List<(double X, double Y)> CalculateDiamondPositions(
+            ErDocument erDoc, Dictionary<string, EntityPlacement> layout)
+        {
+            var positions = new List<(double X, double Y)>();
+
+            // 统计每对实体之间的关系数量（用于同对多关系的偏移）
+            var pairCount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var rel in erDoc.Relationships)
+            {
+                if (!layout.TryGetValue(rel.Entity1, out var p1) ||
+                    !layout.TryGetValue(rel.Entity2, out var p2))
+                {
+                    positions.Add((0, 0));
+                    continue;
+                }
+
+                // 中点
+                double mx = (p1.X + p2.X) / 2.0;
+                double my = (p1.Y + p2.Y) / 2.0;
+
+                // 同对实体间多个关系时，垂直偏移
+                string pairKey = string.Compare(rel.Entity1, rel.Entity2,
+                    StringComparison.OrdinalIgnoreCase) < 0
+                    ? $"{rel.Entity1}|{rel.Entity2}" : $"{rel.Entity2}|{rel.Entity1}";
+
+                if (!pairCount.TryGetValue(pairKey, out int idx))
+                    idx = 0;
+                pairCount[pairKey] = idx + 1;
+
+                // 垂直偏移（两实体连线的法向偏移）
+                double dx = p2.X - p1.X;
+                double dy = p2.Y - p1.Y;
+                double len = Math.Sqrt(dx * dx + dy * dy);
+                if (len < 0.001) len = 1;
+
+                // 法向量（垂直于连线方向）
+                double nx = -dy / len;
+                double ny = dx / len;
+
+                double offset = (idx - 0) * 1.5; // 每个额外关系偏移 1.5
+                mx += nx * offset;
+                my += ny * offset;
+
+                positions.Add((mx, my));
+            }
+
+            return positions;
         }
 
         // ============================================================
