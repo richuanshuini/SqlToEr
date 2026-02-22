@@ -611,11 +611,11 @@ namespace SqlToER.Service
                 // 0 = 不重新放置，只路由
 
                 // 4c. 调用 Visio 内置布局引擎 — 只重排连线
-                _page.Layout();
+                try { _page.Layout(); } catch { }
             }
             catch { }
 
-            _page.AutoSizeDrawing();
+            try { _page.AutoSizeDrawing(); } catch { }
         }
 
         /// <summary>
@@ -703,14 +703,117 @@ namespace SqlToER.Service
             return result;
         }
 
+        // ============================================================
+        // 碰撞检测工具
+        // ============================================================
+
+        /// <summary>线段 (A→B) 与 (C→D) 是否相交</summary>
+        private static bool SegmentsIntersect(
+            double ax, double ay, double bx, double by,
+            double cx, double cy, double dx, double dy)
+        {
+            double d1 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx);
+            double d2 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx);
+            double d3 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+            double d4 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
+            return d1 * d2 < -1e-9 && d3 * d4 < -1e-9;
+        }
+
+        /// <summary>两个圆是否重叠</summary>
+        private static bool CirclesOverlap(
+            double x1, double y1, double r1,
+            double x2, double y2, double r2)
+        {
+            double ddx = x1 - x2, ddy = y1 - y2;
+            double rSum = r1 + r2;
+            return ddx * ddx + ddy * ddy < rSum * rSum;
+        }
+
+        /// <summary>线段 (A→B) 是否穿过圆 (cx,cy,r)</summary>
+        private static bool SegmentIntersectsCircle(
+            double ax, double ay, double bx, double by,
+            double ccx, double ccy, double r)
+        {
+            double ddx = bx - ax, ddy = by - ay;
+            double lenSq = ddx * ddx + ddy * ddy;
+            if (lenSq < 1e-12) return false;
+            double t = ((ccx - ax) * ddx + (ccy - ay) * ddy) / lenSq;
+            t = Math.Clamp(t, 0, 1);
+            double nearX = ax + t * ddx, nearY = ay + t * ddy;
+            double distSq = (nearX - ccx) * (nearX - ccx) + (nearY - ccy) * (nearY - ccy);
+            return distSq < r * r;
+        }
+
+        /// <summary>全量碰撞检测</summary>
+        private static bool HasAnyCollision(
+            Dictionary<string, (double X, double Y, double R)> bounds,
+            List<(string E1, string E2)> relPairs)
+        {
+            var names = bounds.Keys.ToList();
+            for (int i = 0; i < names.Count; i++)
+            {
+                var a = bounds[names[i]];
+                for (int j = i + 1; j < names.Count; j++)
+                {
+                    var b = bounds[names[j]];
+                    if (CirclesOverlap(a.X, a.Y, a.R, b.X, b.Y, b.R))
+                        return true;
+                }
+            }
+            foreach (var (e1, e2) in relPairs)
+            {
+                if (!bounds.TryGetValue(e1, out var p1) || !bounds.TryGetValue(e2, out var p2))
+                    continue;
+                foreach (var kv in bounds)
+                {
+                    if (kv.Key.Equals(e1, StringComparison.OrdinalIgnoreCase) ||
+                        kv.Key.Equals(e2, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (SegmentIntersectsCircle(p1.X, p1.Y, p2.X, p2.Y,
+                            kv.Value.X, kv.Value.Y, kv.Value.R))
+                        return true;
+                }
+            }
+            // 3. 关系线段之间是否交叉
+            for (int i = 0; i < relPairs.Count; i++)
+            {
+                var (a1, a2) = relPairs[i];
+                if (!bounds.TryGetValue(a1, out var pa1) || !bounds.TryGetValue(a2, out var pa2))
+                    continue;
+                for (int j = i + 1; j < relPairs.Count; j++)
+                {
+                    var (b1, b2) = relPairs[j];
+                    if (!bounds.TryGetValue(b1, out var pb1) || !bounds.TryGetValue(b2, out var pb2))
+                        continue;
+                    // 共享端点的线段不算交叉
+                    if (a1.Equals(b1, StringComparison.OrdinalIgnoreCase) ||
+                        a1.Equals(b2, StringComparison.OrdinalIgnoreCase) ||
+                        a2.Equals(b1, StringComparison.OrdinalIgnoreCase) ||
+                        a2.Equals(b2, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (SegmentsIntersect(pa1.X, pa1.Y, pa2.X, pa2.Y,
+                                          pb1.X, pb1.Y, pb2.X, pb2.Y))
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        // ============================================================
+        // 力导向布局算法 (Fruchterman-Reingold 变体)
+        // 菱形作为轻量级节点参与力模拟，自然解决折线交叉
+        // ============================================================
+
+        private const int SIM_ENTITY = 0;
+        private const int SIM_DIAMOND = 1;
+
         /// <summary>
-        /// ER 力导向布局算法（Fruchterman-Reingold 变体）
-        /// 
-        /// 核心：所有实体平等参与力模拟
-        /// - 排斥力：所有实体互相排斥，距离越近排斥越强
-        /// - 吸引力：有关系的实体互相吸引（弹簧力）
-        /// - 最小距离：2*AttrRadius+2，确保属性扇面不重叠
-        /// - AttrAngle：由 OptimizeAttrAngles 后处理
+        /// F-R 力导向布局：
+        /// 阶段0 - 图扩展（菱形变节点）
+        /// 阶段1 - BFS 层级智能初始化
+        /// 阶段2 - 力迭代（斥力+引力+温度冷却）
+        /// 阶段3 - 后处理（菱形修正+重叠消除）
+        /// 阶段4 - 归一化输出
         /// </summary>
         private Dictionary<string, EntityPlacement> CalculateLayout(ErDocument erDoc)
         {
@@ -721,161 +824,300 @@ namespace SqlToER.Service
 
             if (count == 0) return result;
 
-            // 动态安全距离：基于最大属性数量估算半径
+            // ---- 预计算每个实体的动态半径 ----
             var attrCounts = erDoc.Attributes
                 .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
-            int maxAttrs = attrCounts.Count > 0 ? attrCounts.Values.Max() : 0;
-            // 最大属性数实体的估算半径（假设 PI 弧度可用）
-            double maxR = Math.Max(AttrRadius, maxAttrs * _attrW * 1.3 / Math.PI);
-            double safeDistance = 2 * maxR + 2.0;
 
-            // === 边缘情况：只有1个实体 ===
+            double EstRadius(string name)
+            {
+                int n = attrCounts.GetValueOrDefault(name, 0);
+                return Math.Max(AttrRadius, n * _attrW * 1.3 / Math.PI);
+            }
+
+            // ---- 边缘情况 ----
             if (count == 1)
             {
-                result[entities[0].Name] = new(EntityStartX + AttrRadius, EntityY + AttrRadius, Math.PI / 2);
+                double r0 = EstRadius(entities[0].Name);
+                result[entities[0].Name] = new(EntityStartX + r0, EntityY + r0, Math.PI / 2);
                 return result;
             }
-
-            // === 边缘情况：只有2个实体 ===
             if (count == 2)
             {
-                result[entities[0].Name] = new(EntityStartX + AttrRadius, EntityY + AttrRadius, Math.PI * 3 / 4);
-                result[entities[1].Name] = new(EntityStartX + AttrRadius + safeDistance, EntityY + AttrRadius, Math.PI / 4);
+                double r0 = EstRadius(entities[0].Name);
+                double r1 = EstRadius(entities[1].Name);
+                double gap = r0 + r1 + 1.5;
+                result[entities[0].Name] = new(EntityStartX + r0, EntityY + r0, Math.PI * 3 / 4);
+                result[entities[1].Name] = new(EntityStartX + r0 + gap, EntityY + r1, Math.PI / 4);
                 return result;
             }
 
-            // === 3+ 实体：力导向布局 ===
+            // ============================================================
+            // 阶段 0：图扩展 — 菱形变节点
+            // ============================================================
 
-            // 构建邻接关系
-            var neighbors = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-            var degree = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var e in entities)
-            {
-                neighbors[e.Name] = new(StringComparer.OrdinalIgnoreCase);
-                degree[e.Name] = 0;
-            }
-            foreach (var rel in rels)
-            {
-                if (neighbors.ContainsKey(rel.Entity1) && neighbors.ContainsKey(rel.Entity2))
-                {
-                    neighbors[rel.Entity1].Add(rel.Entity2);
-                    neighbors[rel.Entity2].Add(rel.Entity1);
-                    degree[rel.Entity1]++;
-                    degree[rel.Entity2]++;
-                }
-            }
-
-            // 初始位置：大圆上均匀分布（Greedy-Append 排序）
-            string hub = entities[0].Name;
-            foreach (var kv in degree)
-                if (kv.Value > degree.GetValueOrDefault(hub, 0)) hub = kv.Key;
-
-            var ordered = GreedyAppendOrder(hub, entities, neighbors, degree);
-            // hub 也放到圆上（不再放中心）
-            var allEntities = new List<string> { hub };
-            allEntities.AddRange(ordered);
-
-            double initRadius = count * safeDistance / (2 * Math.PI);
-            double cx = EntityStartX + initRadius + AttrRadius;
-            double cy = EntityY + initRadius + AttrRadius;
-
+            // 节点数据: id, type, x, y, radius
+            var nodeIds = new List<string>();
+            var nodeType = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var nodeRadius = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
             var posX = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
             var posY = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
 
-            for (int i = 0; i < allEntities.Count; i++)
+            // 添加实体节点
+            foreach (var e in entities)
             {
-                double angle = 2.0 * Math.PI * i / allEntities.Count;
-                posX[allEntities[i]] = cx + initRadius * Math.Cos(angle);
-                posY[allEntities[i]] = cy + initRadius * Math.Sin(angle);
+                nodeIds.Add(e.Name);
+                nodeType[e.Name] = SIM_ENTITY;
+                nodeRadius[e.Name] = EstRadius(e.Name);
             }
 
-            // ---- 力模拟迭代 ----
-            double idealDist = safeDistance; // 理想边长
-            double k2 = idealDist * idealDist;
-            int iterations = 200;
+            // 添加菱形节点 + 构建边
+            var simEdges = new List<(string From, string To)>();
+            var diamondEntity1 = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var diamondEntity2 = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-            for (int iter = 0; iter < iterations; iter++)
+            for (int ri = 0; ri < rels.Count; ri++)
             {
-                double temperature = idealDist * (1.0 - (double)iter / iterations);
+                var rel = rels[ri];
+                string dId = $"◇{rel.Name}_{ri}";
+                nodeIds.Add(dId);
+                nodeType[dId] = SIM_DIAMOND;
+                nodeRadius[dId] = 0.5;
+                diamondEntity1[dId] = rel.Entity1;
+                diamondEntity2[dId] = rel.Entity2;
+
+                // 边: Entity1 ↔ Diamond ↔ Entity2
+                simEdges.Add((rel.Entity1, dId));
+                simEdges.Add((dId, rel.Entity2));
+            }
+
+            // 构建邻接表（仅实体间，用于 BFS）
+            var entityNeighbors = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            var entityDegree = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var e in entities)
+            {
+                entityNeighbors[e.Name] = new(StringComparer.OrdinalIgnoreCase);
+                entityDegree[e.Name] = 0;
+            }
+            foreach (var rel in rels)
+            {
+                if (entityNeighbors.ContainsKey(rel.Entity1) && entityNeighbors.ContainsKey(rel.Entity2))
+                {
+                    entityNeighbors[rel.Entity1].Add(rel.Entity2);
+                    entityNeighbors[rel.Entity2].Add(rel.Entity1);
+                    entityDegree[rel.Entity1]++;
+                    entityDegree[rel.Entity2]++;
+                }
+            }
+
+            // ============================================================
+            // 阶段 1：BFS 层级智能初始化
+            // ============================================================
+
+            // 找度数中心节点
+            string hub = entities[0].Name;
+            foreach (var kv in entityDegree)
+                if (kv.Value > entityDegree.GetValueOrDefault(hub, 0)) hub = kv.Key;
+
+            // BFS 分层
+            var level = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var bfsOrder = new List<string>();
+            level[hub] = 0;
+            bfsOrder.Add(hub);
+            var queue = new Queue<string>();
+            queue.Enqueue(hub);
+
+            while (queue.Count > 0)
+            {
+                string u = queue.Dequeue();
+                foreach (var v in entityNeighbors.GetValueOrDefault(u, []))
+                {
+                    if (!level.ContainsKey(v))
+                    {
+                        level[v] = level[u] + 1;
+                        bfsOrder.Add(v);
+                        queue.Enqueue(v);
+                    }
+                }
+            }
+            // 没有连接的孤立实体
+            foreach (var e in entities)
+            {
+                if (!level.ContainsKey(e.Name))
+                {
+                    level[e.Name] = level.Count > 0 ? level.Values.Max() + 1 : 0;
+                    bfsOrder.Add(e.Name);
+                }
+            }
+
+            // 按层级环形初始化实体位置
+            double maxEntityR = entities.Max(e => EstRadius(e.Name));
+            double idealDist = 2 * maxEntityR + 2.0;
+            int maxLevel = level.Values.Max();
+
+            for (int lv = 0; lv <= maxLevel; lv++)
+            {
+                var nodesAtLevel = bfsOrder.Where(n => level[n] == lv).ToList();
+                double radius = lv == 0 ? 0 : lv * idealDist;
+                for (int i = 0; i < nodesAtLevel.Count; i++)
+                {
+                    double angle = 2.0 * Math.PI * i / nodesAtLevel.Count;
+                    if (lv == 0 && nodesAtLevel.Count == 1)
+                    {
+                        posX[nodesAtLevel[i]] = 0;
+                        posY[nodesAtLevel[i]] = 0;
+                    }
+                    else
+                    {
+                        posX[nodesAtLevel[i]] = radius * Math.Cos(angle);
+                        posY[nodesAtLevel[i]] = radius * Math.Sin(angle);
+                    }
+                }
+            }
+
+            // 菱形初始化到两实体中点
+            foreach (var dId in diamondEntity1.Keys)
+            {
+                string e1 = diamondEntity1[dId], e2 = diamondEntity2[dId];
+                if (posX.ContainsKey(e1) && posX.ContainsKey(e2))
+                {
+                    posX[dId] = (posX[e1] + posX[e2]) / 2;
+                    posY[dId] = (posY[e1] + posY[e2]) / 2;
+                }
+                else
+                {
+                    posX[dId] = 0; posY[dId] = 0;
+                }
+            }
+
+            // ============================================================
+            // 阶段 2：高密度紧凑力导向（截断斥力+向心引力+动态弹簧+两阶段退火）
+            // ============================================================
+
+            int totalIter = 800;
+            double gravityConstant = 0.015;
+            var rng = new Random(42);
+
+            for (int iter = 0; iter < totalIter; iter++)
+            {
+                // 两阶段退火温度
+                double temperature;
+                if (iter < 400)
+                    temperature = 10.0 - (10.0 - 1.0) * iter / 400.0;      // 10→1
+                else
+                    temperature = 1.0 - (1.0 - 0.01) * (iter - 400) / 400.0; // 1→0.01
 
                 var dispX = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
                 var dispY = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-                foreach (var e in allEntities)
+                foreach (var n in nodeIds) { dispX[n] = 0; dispY[n] = 0; }
+
+                // ---- 向质心引力：所有节点向质心收缩 ----
+                double cenX = 0, cenY = 0;
+                foreach (var n in nodeIds) { cenX += posX[n]; cenY += posY[n]; }
+                cenX /= nodeIds.Count; cenY /= nodeIds.Count;
+                foreach (var n in nodeIds)
                 {
-                    dispX[e] = 0;
-                    dispY[e] = 0;
+                    dispX[n] -= (posX[n] - cenX) * gravityConstant;
+                    dispY[n] -= (posY[n] - cenY) * gravityConstant;
                 }
 
-                // 排斥力：所有节点对
-                for (int i = 0; i < allEntities.Count; i++)
+                // ---- 截断斥力：只在碰撞距离内排斥 ----
+                for (int i = 0; i < nodeIds.Count; i++)
                 {
-                    for (int j = i + 1; j < allEntities.Count; j++)
+                    for (int j = i + 1; j < nodeIds.Count; j++)
                     {
-                        string u = allEntities[i], v = allEntities[j];
-                        double dx = posX[u] - posX[v];
-                        double dy = posY[u] - posY[v];
+                        string u = nodeIds[i], v = nodeIds[j];
+                        double dx = posX[v] - posX[u], dy = posY[v] - posY[u];
                         double dist = Math.Sqrt(dx * dx + dy * dy);
-                        if (dist < 0.01) { dist = 0.01; dx = 0.01; }
+                        if (dist < 0.01)
+                        {
+                            dx = (rng.NextDouble() - 0.5) * 0.1;
+                            dy = (rng.NextDouble() - 0.5) * 0.1;
+                            dist = 0.1;
+                        }
 
-                        double force = k2 / dist; // 排斥力 = k² / d
-                        double fx = force * dx / dist;
-                        double fy = force * dy / dist;
-
-                        dispX[u] += fx; dispY[u] += fy;
-                        dispX[v] -= fx; dispY[v] -= fy;
+                        double lSafe = nodeRadius[u] + nodeRadius[v] + 2.0;
+                        if (dist < lSafe)
+                        {
+                            // 强硬防重叠墙
+                            double force = 10.0 * (lSafe - dist) * (lSafe - dist) / dist;
+                            double fx = force * dx / dist;
+                            double fy = force * dy / dist;
+                            dispX[u] -= fx; dispY[u] -= fy;
+                            dispX[v] += fx; dispY[v] += fy;
+                        }
+                        // dist >= lSafe → 斥力 = 0，不再互推
                     }
                 }
 
-                // 吸引力：有关系的节点对
-                foreach (var rel in rels)
+                // ---- 动态弹簧引力：只在超过静止长度时拉 ----
+                foreach (var (eu, ev) in simEdges)
                 {
-                    if (!posX.ContainsKey(rel.Entity1) || !posX.ContainsKey(rel.Entity2)) continue;
-                    string u = rel.Entity1, v = rel.Entity2;
-                    double dx = posX[u] - posX[v];
-                    double dy = posY[u] - posY[v];
+                    if (!posX.ContainsKey(eu) || !posX.ContainsKey(ev)) continue;
+                    double dx = posX[ev] - posX[eu], dy = posY[ev] - posY[eu];
                     double dist = Math.Sqrt(dx * dx + dy * dy);
                     if (dist < 0.01) continue;
 
-                    double force = dist * dist / idealDist; // 吸引力 = d² / k
-                    double fx = force * dx / dist;
-                    double fy = force * dy / dist;
-
-                    dispX[u] -= fx; dispY[u] -= fy;
-                    dispX[v] += fx; dispY[v] += fy;
+                    double lRest = nodeRadius[eu] + nodeRadius[ev] + 1.5;
+                    if (dist > lRest)
+                    {
+                        // 胡克定律：只拉不推（系数 0.4）
+                        double force = (dist - lRest) * 0.4;
+                        double fx = force * dx / dist;
+                        double fy = force * dy / dist;
+                        dispX[eu] += fx; dispY[eu] += fy;
+                        dispX[ev] -= fx; dispY[ev] -= fy;
+                    }
                 }
 
-                // 应用位移（温度限制最大位移）
-                foreach (var e in allEntities)
+                // ---- 应用位移（温度限制）----
+                foreach (var n in nodeIds)
                 {
-                    double dx = dispX[e], dy = dispY[e];
+                    double dx = dispX[n], dy = dispY[n];
                     double len = Math.Sqrt(dx * dx + dy * dy);
                     if (len > 0.01)
                     {
                         double factor = Math.Min(len, temperature) / len;
-                        posX[e] += dx * factor;
-                        posY[e] += dy * factor;
+                        double mass = nodeType[n] == SIM_DIAMOND ? 1.5 : 1.0;
+                        posX[n] += dx * factor * mass;
+                        posY[n] += dy * factor * mass;
                     }
                 }
             }
 
-            // ---- 重叠消除：确保最小距离 ----
+            // ============================================================
+            // 阶段 3：后处理
+            // ============================================================
+
+            // 3a. 菱形拉回两实体中点方向
+            foreach (var dId in diamondEntity1.Keys)
+            {
+                string e1 = diamondEntity1[dId], e2 = diamondEntity2[dId];
+                if (!posX.ContainsKey(e1) || !posX.ContainsKey(e2)) continue;
+                double midX = (posX[e1] + posX[e2]) / 2;
+                double midY = (posY[e1] + posY[e2]) / 2;
+                posX[dId] = posX[dId] * 0.2 + midX * 0.8;
+                posY[dId] = posY[dId] * 0.2 + midY * 0.8;
+            }
+
+            // 3b. 实体重叠消除
+            var entityNames = entities.Select(e => e.Name).ToList();
             for (int pass = 0; pass < 50; pass++)
             {
                 bool moved = false;
-                for (int i = 0; i < allEntities.Count; i++)
+                for (int i = 0; i < entityNames.Count; i++)
                 {
-                    for (int j = i + 1; j < allEntities.Count; j++)
+                    for (int j = i + 1; j < entityNames.Count; j++)
                     {
-                        string u = allEntities[i], v = allEntities[j];
-                        double dx = posX[u] - posX[v];
-                        double dy = posY[u] - posY[v];
+                        string u = entityNames[i], v = entityNames[j];
+                        double dx = posX[u] - posX[v], dy = posY[u] - posY[v];
                         double dist = Math.Sqrt(dx * dx + dy * dy);
-                        if (dist < safeDistance)
+                        double minDist = nodeRadius[u] + nodeRadius[v];
+                        if (dist < minDist)
                         {
-                            double push = (safeDistance - dist) / 2.0 + 0.1;
-                            double nx = dx / Math.Max(dist, 0.01);
-                            double ny = dy / Math.Max(dist, 0.01);
+                            if (dist < 0.01) { dx = 1; dy = 0; dist = 1; }
+                            double push = (minDist - dist) / 2.0 + 0.1;
+                            double nx = dx / dist, ny = dy / dist;
                             posX[u] += nx * push; posY[u] += ny * push;
                             posX[v] -= nx * push; posY[v] -= ny * push;
                             moved = true;
@@ -885,109 +1127,69 @@ namespace SqlToER.Service
                 if (!moved) break;
             }
 
-            // ---- 归一化：确保所有坐标为正 ----
-            double minX = double.MaxValue, minY = double.MaxValue;
-            foreach (var e in allEntities)
-            {
-                minX = Math.Min(minX, posX[e]);
-                minY = Math.Min(minY, posY[e]);
-            }
-            double offsetX = EntityStartX + AttrRadius - minX + 1;
-            double offsetY = EntityY + AttrRadius - minY + 1;
+            // ============================================================
+            // 阶段 4：归一化 — 只输出实体坐标
+            // ============================================================
 
-            foreach (var e in allEntities)
+            double minPX = double.MaxValue, minPY = double.MaxValue;
+            foreach (var e in entityNames)
             {
-                double attrAngle = Math.PI / 2; // 默认朝上，OptimizeAttrAngles 会调整
-                result[e] = new EntityPlacement(posX[e] + offsetX, posY[e] + offsetY, attrAngle);
+                minPX = Math.Min(minPX, posX[e] - nodeRadius[e]);
+                minPY = Math.Min(minPY, posY[e] - nodeRadius[e]);
             }
+            double offX = EntityStartX + 1 - minPX;
+            double offY = EntityY + 1 - minPY;
+
+            foreach (var e in entityNames)
+                result[e] = new EntityPlacement(posX[e] + offX, posY[e] + offY, Math.PI / 2);
 
             return result;
         }
 
-        /// <summary>
-        /// Greedy-Append 贪心排序算法
-        /// 
-        /// 从枢纽的邻居开始，每次选择与已放置实体连接最多的候选实体
-        /// 追加到序列末尾 → 有关系的实体尽量相邻，减少圆上边交叉
-        /// </summary>
-        private static List<string> GreedyAppendOrder(
-            string hub, List<ErEntity> entities,
-            Dictionary<string, HashSet<string>> neighbors,
-            Dictionary<string, int> degree)
-        {
-            var placed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { hub };
-            var order = new List<string>();
 
-            // 候选池：所有非枢纽实体
-            var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var e in entities)
-            {
-                if (!e.Name.Equals(hub, StringComparison.OrdinalIgnoreCase))
-                    candidates.Add(e.Name);
-            }
 
-            // 从枢纽的度数最高的邻居开始
-            string? first = null;
-            int bestDeg = -1;
-            foreach (var nb in neighbors[hub])
-            {
-                if (candidates.Contains(nb) && degree.GetValueOrDefault(nb, 0) > bestDeg)
-                {
-                    bestDeg = degree.GetValueOrDefault(nb, 0);
-                    first = nb;
-                }
-            }
-            // 如果枢纽没有邻居，取度数最高的候选
-            if (first == null)
-            {
-                foreach (var c in candidates)
-                {
-                    if (degree.GetValueOrDefault(c, 0) > bestDeg)
-                    {
-                        bestDeg = degree.GetValueOrDefault(c, 0);
-                        first = c;
-                    }
-                }
-            }
-            if (first == null && candidates.Count > 0) first = candidates.First();
-            if (first != null)
-            {
-                order.Add(first);
-                placed.Add(first);
-                candidates.Remove(first);
-            }
 
-            // 贪心追加：每次选与已放置实体连接最多的候选
-            while (candidates.Count > 0)
-            {
-                string? best = null;
-                int bestScore = -1;
 
-                foreach (var c in candidates)
-                {
-                    // 分数 = 与已放置实体的连接数（包括枢纽）
-                    int score = 0;
-                    foreach (var nb in neighbors.GetValueOrDefault(c, []))
-                    {
-                        if (placed.Contains(nb)) score++;
-                    }
-                    // 优先连接多的，平局时选度数高的
-                    if (score > bestScore || (score == bestScore &&
-                        degree.GetValueOrDefault(c, 0) > degree.GetValueOrDefault(best ?? "", 0)))
-                    {
-                        bestScore = score;
-                        best = c;
-                    }
-                }
 
-                if (best == null) best = candidates.First();
-                order.Add(best);
-                placed.Add(best);
-                candidates.Remove(best);
-            }
 
-            return order;
-        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         /// <summary>
         /// 计算每个关系菱形的位置

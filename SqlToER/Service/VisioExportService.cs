@@ -25,6 +25,17 @@ namespace SqlToER.Service
             try
             {
                 onStatus?.Invoke("正在启动 Visio...");
+
+                // 关闭残留 Visio 进程，防止文件锁定错误
+                try
+                {
+                    foreach (var p in System.Diagnostics.Process.GetProcessesByName("VISIO"))
+                    {
+                        try { p.Kill(); p.WaitForExit(3000); } catch { }
+                    }
+                }
+                catch { }
+
                 app = new Visio.InvisibleApp();
                 doc = app.Documents.Add("");
                 var page = doc.Pages[1];
