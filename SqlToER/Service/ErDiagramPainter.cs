@@ -544,9 +544,36 @@ namespace SqlToER.Service
                 .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 
-            // ---- 步骤1: 计算布局 ----
-            onStatus?.Invoke("正在计算布局...");
-            var layout = CalculateLayout(erDoc);
+            // ---- 步骤1: MSAGL 计算布局（内置阈值：≤10 MDS / >10 Sugiyama）----
+            onStatus?.Invoke($"正在计算布局（MSAGL，{erDoc.Entities.Count}个实体）...");
+            var msaglCoords = MsaglLayoutService.CalculateLayout(
+                erDoc, _entityW, _entityH, _attrW, _relW, _relH);
+
+            // MSAGL 坐标归一化到正值区间
+            var attrCounts2 = erDoc.Attributes
+                .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
+            double minX = double.MaxValue, minY = double.MaxValue;
+            foreach (var entity in erDoc.Entities)
+            {
+                if (msaglCoords.TryGetValue(entity.Name, out var c))
+                {
+                    int nA = attrCounts2.GetValueOrDefault(entity.Name, 0);
+                    double r = Math.Max(AttrRadius, nA * _attrW * 1.3 / Math.PI);
+                    minX = Math.Min(minX, c.X - r);
+                    minY = Math.Min(minY, c.Y - r);
+                }
+            }
+            double offX = EntityStartX + 1 - minX;
+            double offY = EntityY + 1 - minY;
+
+            var layout = new Dictionary<string, EntityPlacement>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entity in erDoc.Entities)
+            {
+                if (msaglCoords.TryGetValue(entity.Name, out var coord))
+                    layout[entity.Name] = new EntityPlacement(coord.X + offX, coord.Y + offY, Math.PI / 2);
+            }
 
             // ---- 步骤1.5: 角度分区 — 属性放到关系线的空隙中 ----
             onStatus?.Invoke("正在计算属性避让方向...");
