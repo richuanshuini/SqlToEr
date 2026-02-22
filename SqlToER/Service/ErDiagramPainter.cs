@@ -101,23 +101,22 @@ namespace SqlToER.Service
         /// <summary>
         /// 将属性的控制点（黄色菱形）吸附到实体矩形的边缘
         ///
+        /// DBCHEN 属性是带 Control Handle 的 2D 形状，线从椭圆画到控制点坐标。
         /// 1. 几何交点算法：求属性→实体方向与矩形边缘的交点
-        /// 2. 在实体边缘动态植入 Connection Point（用 Width*pct 公式，响应式）
-        /// 3. 控制点 GlueTo 连接点（合法操作，不报 0x86DB089D）
+        /// 2. 转换为属性的局部坐标
+        /// 3. FormulaForceU 强制设置控制点 X/Y
         /// </summary>
         private static void GlueAttributeToEntity(Visio.Shape attrShape, Visio.Shape entityShape)
         {
             short secControls = (short)Visio.VisSectionIndices.visSectionControls;
-            short secConnPts = (short)Visio.VisSectionIndices.visSectionConnectionPts;
 
             try
             {
-                // 检查控制点是否存在
                 if (attrShape.get_RowExists(secControls, 0,
                     (short)Visio.VisExistsFlags.visExistsAnywhere) == 0)
                     return;
 
-                // ---- 第1步：几何交点算法 ----
+                // 几何交点算法
                 double eX = entityShape.get_CellsU("PinX").ResultIU;
                 double eY = entityShape.get_CellsU("PinY").ResultIU;
                 double eW = entityShape.get_CellsU("Width").ResultIU;
@@ -136,34 +135,20 @@ namespace SqlToER.Service
                 double intersectX = eX + t * dx;
                 double intersectY = eY + t * dy;
 
-                // 百分比（相对于实体左下角）
-                double xPct = Math.Clamp((intersectX - (eX - eW / 2.0)) / eW, 0.0, 1.0);
-                double yPct = Math.Clamp((intersectY - (eY - eH / 2.0)) / eH, 0.0, 1.0);
+                // 边缘交点 → 属性的局部坐标
+                double locPinX = attrShape.get_CellsU("LocPinX").ResultIU;
+                double locPinY = attrShape.get_CellsU("LocPinY").ResultIU;
+                double localX = intersectX - aX + locPinX;
+                double localY = intersectY - aY + locPinY;
 
-                // ---- 第2步：在实体上动态添加 Connection Point ----
-                // 确保连接点 Section 存在
-                if (entityShape.get_SectionExists(secConnPts, 0) == 0)
-                    entityShape.AddSection(secConnPts);
+                // FormulaForceU 强制设置控制点坐标
+                string localXStr = localX.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                string localYStr = localY.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-                // 添加新行
-                short newRow = entityShape.AddRow(secConnPts,
-                    (short)Visio.VisRowIndices.visRowLast,
-                    (short)Visio.VisRowTags.visTagCnnctPt);
-
-                // 用公式设置位置（响应式：矩形缩放时连接点跟着动）
-                string strX = xPct.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                string strY = yPct.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                entityShape.get_CellsSRC(secConnPts, newRow,
-                    (short)Visio.VisCellIndices.visCnnctX).FormulaU = $"Width*{strX}";
-                entityShape.get_CellsSRC(secConnPts, newRow,
-                    (short)Visio.VisCellIndices.visCnnctY).FormulaU = $"Height*{strY}";
-
-                // ---- 第3步：控制点 GlueTo 连接点 ----
-                Visio.Cell ctlX = attrShape.get_CellsSRC(secControls, 0,
-                    (short)Visio.VisCellIndices.visCtlX);
-                Visio.Cell connCell = entityShape.get_CellsSRC(secConnPts, newRow,
-                    (short)Visio.VisCellIndices.visCnnctX);
-                ctlX.GlueTo(connCell);
+                attrShape.get_CellsSRC(secControls, 0,
+                    (short)Visio.VisCellIndices.visCtlX).FormulaForceU = localXStr;
+                attrShape.get_CellsSRC(secControls, 0,
+                    (short)Visio.VisCellIndices.visCtlY).FormulaForceU = localYStr;
             }
             catch { }
         }
