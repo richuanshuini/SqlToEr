@@ -102,12 +102,13 @@ namespace SqlToER.Service
         }
 
         /// <summary>
-        /// 将属性的控制点（黄色菱形）吸附到实体矩形的边缘
+        /// 将属性的控制点（黄色菱形）动态吸附到实体矩形的边缘
         ///
-        /// DBCHEN 属性是带 Control Handle 的 2D 形状，线从椭圆画到控制点坐标。
-        /// 1. 几何交点算法：求属性→实体方向与矩形边缘的交点
-        /// 2. 转换为属性的局部坐标
-        /// 3. FormulaForceU 强制设置控制点 X/Y
+        /// 策略：
+        /// 1. 几何交点算法：求属性→实体方向与矩形边缘的交点百分比
+        /// 2. 在实体上添加连接点（Width*p, Height*q 公式）
+        /// 3. FormulaForceU 写入 Sheet.{ID}! 跨形状引用公式
+        ///    → 移动实体时，属性控制点自动跟随
         /// </summary>
         private static void GlueAttributeToEntity(Visio.Shape attrShape, Visio.Shape entityShape)
         {
@@ -119,7 +120,7 @@ namespace SqlToER.Service
                     (short)Visio.VisExistsFlags.visExistsAnywhere) == 0)
                     return;
 
-                // 几何交点算法
+                // --- 几何交点算法（求交点在实体 Width/Height 上的百分比）---
                 double eX = entityShape.get_CellsU("PinX").ResultIU;
                 double eY = entityShape.get_CellsU("PinY").ResultIU;
                 double eW = entityShape.get_CellsU("Width").ResultIU;
@@ -138,20 +139,44 @@ namespace SqlToER.Service
                 double intersectX = eX + t * dx;
                 double intersectY = eY + t * dy;
 
-                // 边缘交点 → 属性的局部坐标
-                double locPinX = attrShape.get_CellsU("LocPinX").ResultIU;
-                double locPinY = attrShape.get_CellsU("LocPinY").ResultIU;
-                double localX = intersectX - aX + locPinX;
-                double localY = intersectY - aY + locPinY;
+                // 交点转换为实体局部坐标的百分比 (0..1)
+                double eLeft = eX - eW / 2.0;
+                double eBottom = eY - eH / 2.0;
+                double pctX = (intersectX - eLeft) / eW;
+                double pctY = (intersectY - eBottom) / eH;
+                pctX = Math.Max(0, Math.Min(1, pctX));
+                pctY = Math.Max(0, Math.Min(1, pctY));
 
-                // FormulaForceU 强制设置控制点坐标
-                string localXStr = localX.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                string localYStr = localY.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                // --- 在实体上添加连接点 ---
+                short secConn = (short)Visio.VisSectionIndices.visSectionConnectionPts;
+                if (entityShape.get_SectionExists(secConn, 0) == 0)
+                    entityShape.AddSection(secConn);
+
+                string pxStr = pctX.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                string pyStr = pctY.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+                short cpRow = entityShape.AddRow(secConn,
+                    (short)Visio.VisRowIndices.visRowLast,
+                    (short)Visio.VisRowTags.visTagCnnctPt);
+                entityShape.get_CellsSRC(secConn, cpRow,
+                    (short)Visio.VisCellIndices.visCnnctX).FormulaU = $"Width*{pxStr}";
+                entityShape.get_CellsSRC(secConn, cpRow,
+                    (short)Visio.VisCellIndices.visCnnctY).FormulaU = $"Height*{pyStr}";
+
+                // --- 控制点公式：动态引用实体连接点坐标 ---
+                int eId = entityShape.ID;
+                int formulaIdx = cpRow + 1; // ShapeSheet 公式中 Connections.X 是 1-indexed
+
+                // 实体连接点局部坐标 → 页面坐标 → 属性局部坐标
+                // pageX = Sheet.eId!Connections.X{n} + Sheet.eId!PinX - Sheet.eId!LocPinX
+                // attrLocalX = pageX - PinX + LocPinX
+                string ctlXFormula = $"GUARD(Sheet.{eId}!Connections.X{formulaIdx}+Sheet.{eId}!PinX-Sheet.{eId}!LocPinX-PinX+LocPinX)";
+                string ctlYFormula = $"GUARD(Sheet.{eId}!Connections.Y{formulaIdx}+Sheet.{eId}!PinY-Sheet.{eId}!LocPinY-PinY+LocPinY)";
 
                 attrShape.get_CellsSRC(secControls, 0,
-                    (short)Visio.VisCellIndices.visCtlX).FormulaForceU = localXStr;
+                    (short)Visio.VisCellIndices.visCtlX).FormulaForceU = ctlXFormula;
                 attrShape.get_CellsSRC(secControls, 0,
-                    (short)Visio.VisCellIndices.visCtlY).FormulaForceU = localYStr;
+                    (short)Visio.VisCellIndices.visCtlY).FormulaForceU = ctlYFormula;
             }
             catch { }
         }
@@ -202,8 +227,7 @@ namespace SqlToER.Service
         }
 
         /// <summary>
-        /// 画关系连接线（DBCHEN 1D 形状，蓝色端点）
-        /// 优先 GlueTo 连接点（角尖），失败退到 GlueTo PinX，再失败退到坐标
+        /// 画连接线（通用版，用最近连接点或 PinX）
         /// </summary>
         public Visio.Shape DrawConnector(Visio.Shape from, Visio.Shape to, string label = "")
         {
@@ -211,9 +235,7 @@ namespace SqlToER.Service
             double my = (from.get_CellsU("PinY").ResultIU + to.get_CellsU("PinY").ResultIU) / 2;
             var conn = _page.Drop(_connMaster, mx, my);
 
-            // BeginX → from 形状
             GlueEndpoint(conn, "BeginX", "BeginY", from);
-            // EndX → to 形状
             GlueEndpoint(conn, "EndX", "EndY", to);
 
             if (!string.IsNullOrEmpty(label))
@@ -223,33 +245,50 @@ namespace SqlToER.Service
 
         /// <summary>
         /// 将 1D 连接线的端点吸附到目标形状
-        /// 优先: GlueTo 最近的连接点 → GlueTo PinX → 坐标设置
+        /// 统一使用连接点吸附（菱形角尖 or 实体边缘专用点）
         /// </summary>
-        private static void GlueEndpoint(Visio.Shape conn, string cellX, string cellY, Visio.Shape target)
+        private static void GlueEndpoint(Visio.Shape conn, string cellX, string cellY,
+            Visio.Shape target, Visio.Shape? referenceShape = null)
         {
-            // 尝试 GlueTo 连接点（如果目标有连接点，比如菱形的角尖）
             short secConn = (short)Visio.VisSectionIndices.visSectionConnectionPts;
+
+            // 如果有参考形状，在 target 上添加朝向参考形状的连接点
+            if (referenceShape != null)
+            {
+                try
+                {
+                    short cpRow = AddDirectionalConnPt(target, referenceShape);
+                    if (cpRow >= 0)
+                    {
+                        var connPtCell = target.get_CellsSRC(secConn, cpRow,
+                            (short)Visio.VisCellIndices.visCnnctX);
+                        conn.get_CellsU(cellX).GlueTo(connPtCell);
+                        return;
+                    }
+                }
+                catch { }
+            }
+
+            // 退到最近连接点
             try
             {
                 if (target.get_SectionExists(secConn, 0) != 0)
                 {
-                    // 找最近的连接点
-                    double connX = conn.get_CellsU(cellX).ResultIU;
-                    double connY = conn.get_CellsU(cellY).ResultIU;
-                    short bestRow = FindNearestConnectionPoint(target, secConn, connX, connY);
-
+                    double cx = conn.get_CellsU(cellX).ResultIU;
+                    double cy = conn.get_CellsU(cellY).ResultIU;
+                    short bestRow = FindNearestConnectionPoint(target, secConn, cx, cy);
                     if (bestRow >= 0)
                     {
-                        var connPtCell = target.get_CellsSRC(secConn, bestRow,
-                            (short)Visio.VisCellIndices.visCnnctX);
-                        conn.get_CellsU(cellX).GlueTo(connPtCell);
+                        conn.get_CellsU(cellX).GlueTo(
+                            target.get_CellsSRC(secConn, bestRow,
+                                (short)Visio.VisCellIndices.visCnnctX));
                         return;
                     }
                 }
             }
             catch { }
 
-            // 退到 GlueTo PinX（实体矩形等无连接点的形状）
+            // 退到 PinX
             try
             {
                 conn.get_CellsU(cellX).GlueTo(target.get_CellsU("PinX"));
@@ -257,9 +296,56 @@ namespace SqlToER.Service
             }
             catch { }
 
-            // 最终兜底：坐标
             conn.get_CellsU(cellX).ResultIU = target.get_CellsU("PinX").ResultIU;
             conn.get_CellsU(cellY).ResultIU = target.get_CellsU("PinY").ResultIU;
+        }
+
+        /// <summary>
+        /// 在 shape 上添加朝向 towardShape 方向的边缘连接点
+        /// 返回新连接点的行号
+        /// </summary>
+        private static short AddDirectionalConnPt(Visio.Shape shape, Visio.Shape towardShape)
+        {
+            double sX = shape.get_CellsU("PinX").ResultIU;
+            double sY = shape.get_CellsU("PinY").ResultIU;
+            double sW = shape.get_CellsU("Width").ResultIU;
+            double sH = shape.get_CellsU("Height").ResultIU;
+            double tX = towardShape.get_CellsU("PinX").ResultIU;
+            double tY = towardShape.get_CellsU("PinY").ResultIU;
+
+            double dx = tX - sX;
+            double dy = tY - sY;
+
+            // 计算矩形边缘交点百分比
+            double tx = double.MaxValue, ty = double.MaxValue;
+            if (Math.Abs(dx) > 0.0001) tx = (sW / 2.0) / Math.Abs(dx);
+            if (Math.Abs(dy) > 0.0001) ty = (sH / 2.0) / Math.Abs(dy);
+            double t = Math.Min(tx, ty);
+
+            double ix = sX + t * dx;
+            double iy = sY + t * dy;
+
+            double pctX = (ix - (sX - sW / 2.0)) / sW;
+            double pctY = (iy - (sY - sH / 2.0)) / sH;
+            pctX = Math.Max(0, Math.Min(1, pctX));
+            pctY = Math.Max(0, Math.Min(1, pctY));
+
+            short secConn = (short)Visio.VisSectionIndices.visSectionConnectionPts;
+            if (shape.get_SectionExists(secConn, 0) == 0)
+                shape.AddSection(secConn);
+
+            string px = pctX.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            string py = pctY.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+            short cpRow = shape.AddRow(secConn,
+                (short)Visio.VisRowIndices.visRowLast,
+                (short)Visio.VisRowTags.visTagCnnctPt);
+            shape.get_CellsSRC(secConn, cpRow,
+                (short)Visio.VisCellIndices.visCnnctX).FormulaU = $"Width*{px}";
+            shape.get_CellsSRC(secConn, cpRow,
+                (short)Visio.VisCellIndices.visCnnctY).FormulaU = $"Height*{py}";
+
+            return cpRow;
         }
 
         /// <summary>
@@ -309,17 +395,19 @@ namespace SqlToER.Service
         /// </summary>
         public Visio.Shape DrawEntityWithAttrs(
             string entityName, List<ErAttribute> attrs, double x, double y,
-            double centerAngle = Math.PI / 2)
+            double centerAngle = Math.PI / 2, double maxGap = Math.PI)
         {
             var entity = DrawEntity(entityName, x, y);
 
             int n = attrs.Count;
             if (n == 0) return entity;
 
-            // 扇面张角：基于椭圆宽度和半径动态计算，确保不重叠
-            // 相邻属性的弧距 >= 椭圆宽度 * 1.2（留 20% 间隙）
+            // 扇面张角：基于椭圆宽度和半径动态计算
+            // 同时限制在可用间隙内（留 0.3 弧度安全边距）
             double minStep = (_attrW * 1.2) / AttrRadius;
-            double fanSpan = Math.Min(Math.PI, (n + 1) * minStep);
+            double idealSpan = (n + 1) * minStep;
+            double availableGap = Math.Max(maxGap - 0.3, minStep * 2);
+            double fanSpan = Math.Min(idealSpan, availableGap);
             double startAngle = centerAngle - fanSpan / 2;
             double angleStep = fanSpan / (n + 1);
 
@@ -358,10 +446,29 @@ namespace SqlToER.Service
             string cardL = parts.Length == 2 ? parts[0] : cardinality;
             string cardR = parts.Length == 2 ? parts[1] : "";
 
-            DrawConnector(entity1, diamond, cardL);
-            DrawConnector(diamond, entity2, cardR);
+            // entity1 → diamond: 两端都用方向连接点
+            var conn1 = DrawConnectorDirectional(entity1, diamond, cardL);
+            // diamond → entity2: 两端都用方向连接点
+            var conn2 = DrawConnectorDirectional(diamond, entity2, cardR);
 
             return diamond;
+        }
+
+        /// <summary>
+        /// 画关系连线 — 两端都用方向连接点（朝向对方边缘）
+        /// </summary>
+        private Visio.Shape DrawConnectorDirectional(Visio.Shape from, Visio.Shape to, string label = "")
+        {
+            double mx = (from.get_CellsU("PinX").ResultIU + to.get_CellsU("PinX").ResultIU) / 2;
+            double my = (from.get_CellsU("PinY").ResultIU + to.get_CellsU("PinY").ResultIU) / 2;
+            var conn = _page.Drop(_connMaster, mx, my);
+
+            GlueEndpoint(conn, "BeginX", "BeginY", from, to);
+            GlueEndpoint(conn, "EndX", "EndY", to, from);
+
+            if (!string.IsNullOrEmpty(label))
+                conn.Text = label;
+            return conn;
         }
 
         // ============================================================
@@ -369,9 +476,9 @@ namespace SqlToER.Service
         // ============================================================
 
         /// <summary>
-        /// 布局结果：每个实体的位置 + 属性扇面方向
+        /// 布局结果：每个实体的位置 + 属性扇面方向 + 可用间隙大小
         /// </summary>
-        private record EntityPlacement(double X, double Y, double AttrAngle);
+        private record EntityPlacement(double X, double Y, double AttrAngle, double AttrGap = Math.PI);
 
         public void DrawErDiagram(ErDocument erDoc, Action<string>? onStatus = null)
         {
@@ -383,6 +490,10 @@ namespace SqlToER.Service
             onStatus?.Invoke("正在计算布局...");
             var layout = CalculateLayout(erDoc);
 
+            // ---- 步骤1.5: 角度分区 — 属性放到关系线的空隙中 ----
+            onStatus?.Invoke("正在计算属性避让方向...");
+            layout = OptimizeAttrAngles(erDoc, layout);
+
             // ---- 步骤2: 画实体+属性 ----
             onStatus?.Invoke("正在绘制实体...");
             var entityShapes = new Dictionary<string, Visio.Shape>(StringComparer.OrdinalIgnoreCase);
@@ -391,7 +502,7 @@ namespace SqlToER.Service
                 if (!layout.TryGetValue(entity.Name, out var place)) continue;
                 var attrs = attrsByEntity.GetValueOrDefault(entity.Name, []);
                 var shape = DrawEntityWithAttrs(entity.Name, attrs,
-                    place.X, place.Y, place.AttrAngle);
+                    place.X, place.Y, place.AttrAngle, place.AttrGap);
                 entityShapes[entity.Name] = shape;
             }
 
@@ -409,130 +520,372 @@ namespace SqlToER.Service
                 }
             }
 
+            // ---- 步骤4: Visio 兜底路由优化 ----
+            onStatus?.Invoke("正在优化连线路由...");
+            try
+            {
+                var pageSheet = _page.PageSheet;
+                pageSheet.get_CellsU("RouteStyle").FormulaU = "5"; // visLORouteFlowchartNS
+            }
+            catch { }
+
             _page.AutoSizeDrawing();
         }
 
         /// <summary>
-        /// ER 专用星形布局算法
+        /// 角度分区算法 — 为每个实体找到最大关系线间隙，将属性扇面放入
         /// 
-        /// 1. 构建邻接图，计算每个实体的度数（连接的关系数量）
-        /// 2. 度数最高的实体做枢纽（中心）
-        /// 3. 与枢纽直接相连的实体放在内圈
-        /// 4. 不与枢纽相连的实体放在外圈
-        /// 5. 属性扇面朝外（远离中心方向）
+        /// 1. 收集每个实体的所有关系线方向角（到菱形位置）
+        /// 2. 对角度排序，找到最大间隙
+        /// 3. AttrAngle = 最大间隙的中心
+        /// → 属性椭圆永远在关系线之间的空隙中
+        /// </summary>
+        private Dictionary<string, EntityPlacement> OptimizeAttrAngles(
+            ErDocument erDoc, Dictionary<string, EntityPlacement> layout)
+        {
+            // 预计算菱形位置
+            var diamondPos = CalculateDiamondPositions(erDoc, layout);
+
+            // 收集每个实体的关系线方向角
+            var lineAngles = new Dictionary<string, List<double>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in layout) lineAngles[kv.Key] = new List<double>();
+
+            for (int i = 0; i < erDoc.Relationships.Count; i++)
+            {
+                var rel = erDoc.Relationships[i];
+                var (dX, dY) = diamondPos[i];
+
+                // Entity1 → 菱形方向
+                if (layout.TryGetValue(rel.Entity1, out var p1))
+                {
+                    double angle = Math.Atan2(dY - p1.Y, dX - p1.X);
+                    lineAngles[rel.Entity1].Add(angle);
+                }
+                // Entity2 → 菱形方向
+                if (layout.TryGetValue(rel.Entity2, out var p2))
+                {
+                    double angle = Math.Atan2(dY - p2.Y, dX - p2.X);
+                    lineAngles[rel.Entity2].Add(angle);
+                }
+            }
+
+            // 对每个实体，找最大间隙的中心作为 AttrAngle
+            var result = new Dictionary<string, EntityPlacement>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in layout)
+            {
+                var angles = lineAngles[kv.Key];
+                if (angles.Count == 0)
+                {
+                    result[kv.Key] = kv.Value; // 没有关系，保持原方向
+                    continue;
+                }
+
+                // 归一化到 [0, 2π)
+                for (int i = 0; i < angles.Count; i++)
+                {
+                    angles[i] = ((angles[i] % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+                }
+                angles.Sort();
+
+                // 找最大间隙
+                double maxGap = 0;
+                double bestMid = kv.Value.AttrAngle;
+
+                for (int i = 0; i < angles.Count; i++)
+                {
+                    double next = (i + 1 < angles.Count) ? angles[i + 1] : angles[0] + 2 * Math.PI;
+                    double gap = next - angles[i];
+                    if (gap > maxGap)
+                    {
+                        maxGap = gap;
+                        bestMid = angles[i] + gap / 2.0;
+                    }
+                }
+
+                result[kv.Key] = new EntityPlacement(kv.Value.X, kv.Value.Y, bestMid, maxGap);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// ER 力导向布局算法（Fruchterman-Reingold 变体）
+        /// 
+        /// 核心：所有实体平等参与力模拟
+        /// - 排斥力：所有实体互相排斥，距离越近排斥越强
+        /// - 吸引力：有关系的实体互相吸引（弹簧力）
+        /// - 最小距离：2*AttrRadius+2，确保属性扇面不重叠
+        /// - AttrAngle：由 OptimizeAttrAngles 后处理
         /// </summary>
         private Dictionary<string, EntityPlacement> CalculateLayout(ErDocument erDoc)
         {
             var result = new Dictionary<string, EntityPlacement>(StringComparer.OrdinalIgnoreCase);
             var entities = erDoc.Entities;
             var rels = erDoc.Relationships;
+            int count = entities.Count;
 
-            if (entities.Count == 0) return result;
+            if (count == 0) return result;
+
+            // 每个实体需要的最小安全距离（含属性扇面 + 菱形空间）
+            double safeDistance = 2 * AttrRadius + 3.0;
 
             // === 边缘情况：只有1个实体 ===
-            if (entities.Count == 1)
+            if (count == 1)
             {
-                result[entities[0].Name] = new(EntityStartX, EntityY, Math.PI / 2);
+                result[entities[0].Name] = new(EntityStartX + AttrRadius, EntityY + AttrRadius, Math.PI / 2);
                 return result;
             }
 
-            // === 边缘情况：无关系 → 水平排列 ===
-            if (rels.Count == 0)
+            // === 边缘情况：只有2个实体 ===
+            if (count == 2)
             {
-                double x = EntityStartX;
-                foreach (var e in entities)
-                {
-                    result[e.Name] = new(x, EntityY, Math.PI / 2);
-                    x += EntitySpacing;
-                }
+                result[entities[0].Name] = new(EntityStartX + AttrRadius, EntityY + AttrRadius, Math.PI * 3 / 4);
+                result[entities[1].Name] = new(EntityStartX + AttrRadius + safeDistance, EntityY + AttrRadius, Math.PI / 4);
                 return result;
             }
 
-            // === 边缘情况：只有2个实体 → 左右排列 ===
-            if (entities.Count == 2)
-            {
-                result[entities[0].Name] = new(EntityStartX, EntityY, Math.PI * 3 / 4);
-                result[entities[1].Name] = new(EntityStartX + EntitySpacing, EntityY, Math.PI / 4);
-                return result;
-            }
+            // === 3+ 实体：力导向布局 ===
 
-            // === 正常情况：3+ 个实体 ===
-
-            // 1. 构建邻接图，计算度数
-            var degree = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            // 构建邻接关系
             var neighbors = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            var degree = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var e in entities)
             {
-                degree[e.Name] = 0;
                 neighbors[e.Name] = new(StringComparer.OrdinalIgnoreCase);
+                degree[e.Name] = 0;
             }
-
             foreach (var rel in rels)
             {
-                if (degree.ContainsKey(rel.Entity1))
+                if (neighbors.ContainsKey(rel.Entity1) && neighbors.ContainsKey(rel.Entity2))
                 {
-                    degree[rel.Entity1]++;
                     neighbors[rel.Entity1].Add(rel.Entity2);
-                }
-                if (degree.ContainsKey(rel.Entity2))
-                {
-                    degree[rel.Entity2]++;
                     neighbors[rel.Entity2].Add(rel.Entity1);
+                    degree[rel.Entity1]++;
+                    degree[rel.Entity2]++;
                 }
             }
 
-            // 2. 找枢纽（度数最高的实体）
+            // 初始位置：大圆上均匀分布（Greedy-Append 排序）
             string hub = entities[0].Name;
-            int maxDeg = 0;
             foreach (var kv in degree)
+                if (kv.Value > degree.GetValueOrDefault(hub, 0)) hub = kv.Key;
+
+            var ordered = GreedyAppendOrder(hub, entities, neighbors, degree);
+            // hub 也放到圆上（不再放中心）
+            var allEntities = new List<string> { hub };
+            allEntities.AddRange(ordered);
+
+            double initRadius = count * safeDistance / (2 * Math.PI);
+            double cx = EntityStartX + initRadius + AttrRadius;
+            double cy = EntityY + initRadius + AttrRadius;
+
+            var posX = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            var posY = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+
+            for (int i = 0; i < allEntities.Count; i++)
             {
-                if (kv.Value > maxDeg)
+                double angle = 2.0 * Math.PI * i / allEntities.Count;
+                posX[allEntities[i]] = cx + initRadius * Math.Cos(angle);
+                posY[allEntities[i]] = cy + initRadius * Math.Sin(angle);
+            }
+
+            // ---- 力模拟迭代 ----
+            double idealDist = safeDistance; // 理想边长
+            double k2 = idealDist * idealDist;
+            int iterations = 200;
+
+            for (int iter = 0; iter < iterations; iter++)
+            {
+                double temperature = idealDist * (1.0 - (double)iter / iterations);
+
+                var dispX = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+                var dispY = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+                foreach (var e in allEntities)
                 {
-                    maxDeg = kv.Value;
-                    hub = kv.Key;
+                    dispX[e] = 0;
+                    dispY[e] = 0;
+                }
+
+                // 排斥力：所有节点对
+                for (int i = 0; i < allEntities.Count; i++)
+                {
+                    for (int j = i + 1; j < allEntities.Count; j++)
+                    {
+                        string u = allEntities[i], v = allEntities[j];
+                        double dx = posX[u] - posX[v];
+                        double dy = posY[u] - posY[v];
+                        double dist = Math.Sqrt(dx * dx + dy * dy);
+                        if (dist < 0.01) { dist = 0.01; dx = 0.01; }
+
+                        double force = k2 / dist; // 排斥力 = k² / d
+                        double fx = force * dx / dist;
+                        double fy = force * dy / dist;
+
+                        dispX[u] += fx; dispY[u] += fy;
+                        dispX[v] -= fx; dispY[v] -= fy;
+                    }
+                }
+
+                // 吸引力：有关系的节点对
+                foreach (var rel in rels)
+                {
+                    if (!posX.ContainsKey(rel.Entity1) || !posX.ContainsKey(rel.Entity2)) continue;
+                    string u = rel.Entity1, v = rel.Entity2;
+                    double dx = posX[u] - posX[v];
+                    double dy = posY[u] - posY[v];
+                    double dist = Math.Sqrt(dx * dx + dy * dy);
+                    if (dist < 0.01) continue;
+
+                    double force = dist * dist / idealDist; // 吸引力 = d² / k
+                    double fx = force * dx / dist;
+                    double fy = force * dy / dist;
+
+                    dispX[u] -= fx; dispY[u] -= fy;
+                    dispX[v] += fx; dispY[v] += fy;
+                }
+
+                // 应用位移（温度限制最大位移）
+                foreach (var e in allEntities)
+                {
+                    double dx = dispX[e], dy = dispY[e];
+                    double len = Math.Sqrt(dx * dx + dy * dy);
+                    if (len > 0.01)
+                    {
+                        double factor = Math.Min(len, temperature) / len;
+                        posX[e] += dx * factor;
+                        posY[e] += dy * factor;
+                    }
                 }
             }
 
-            // 3. 分类：与枢纽直接相连 vs 不相连
-            var connectedToHub = new List<string>();
-            var notConnected = new List<string>();
-            foreach (var e in entities)
+            // ---- 重叠消除：确保最小距离 ----
+            for (int pass = 0; pass < 50; pass++)
             {
-                if (e.Name.Equals(hub, StringComparison.OrdinalIgnoreCase)) continue;
-                if (neighbors[hub].Contains(e.Name))
-                    connectedToHub.Add(e.Name);
-                else
-                    notConnected.Add(e.Name);
+                bool moved = false;
+                for (int i = 0; i < allEntities.Count; i++)
+                {
+                    for (int j = i + 1; j < allEntities.Count; j++)
+                    {
+                        string u = allEntities[i], v = allEntities[j];
+                        double dx = posX[u] - posX[v];
+                        double dy = posY[u] - posY[v];
+                        double dist = Math.Sqrt(dx * dx + dy * dy);
+                        if (dist < safeDistance)
+                        {
+                            double push = (safeDistance - dist) / 2.0 + 0.1;
+                            double nx = dx / Math.Max(dist, 0.01);
+                            double ny = dy / Math.Max(dist, 0.01);
+                            posX[u] += nx * push; posY[u] += ny * push;
+                            posX[v] -= nx * push; posY[v] -= ny * push;
+                            moved = true;
+                        }
+                    }
+                }
+                if (!moved) break;
             }
 
-            // 4. 枢纽在中心
-            double centerX = EntityStartX + (entities.Count - 1) * EntitySpacing / 2.0;
-            double centerY = EntityY;
-            result[hub] = new(centerX, centerY, Math.PI / 2);
-
-            // 5. 与枢纽相连的实体放在圆周上（等角分布）
-            var allPeripheral = new List<string>();
-            allPeripheral.AddRange(connectedToHub);
-            allPeripheral.AddRange(notConnected);
-
-            double radius = EntitySpacing * 1.2;
-            int totalPeripheral = allPeripheral.Count;
-
-            for (int i = 0; i < totalPeripheral; i++)
+            // ---- 归一化：确保所有坐标为正 ----
+            double minX = double.MaxValue, minY = double.MaxValue;
+            foreach (var e in allEntities)
             {
-                // 从正上方开始，顺时针均匀分布
-                // 偏移 PI/2 使第一个在正上方
-                double angle = Math.PI / 2.0 + 2.0 * Math.PI * i / totalPeripheral;
-                double ex = centerX + radius * Math.Cos(angle);
-                double ey = centerY + radius * Math.Sin(angle);
+                minX = Math.Min(minX, posX[e]);
+                minY = Math.Min(minY, posY[e]);
+            }
+            double offsetX = EntityStartX + AttrRadius - minX + 1;
+            double offsetY = EntityY + AttrRadius - minY + 1;
 
-                // 属性扇面朝外（从实体指向远离中心的方向）
-                double attrAngle = angle;
-
-                result[allPeripheral[i]] = new(ex, ey, attrAngle);
+            foreach (var e in allEntities)
+            {
+                double attrAngle = Math.PI / 2; // 默认朝上，OptimizeAttrAngles 会调整
+                result[e] = new EntityPlacement(posX[e] + offsetX, posY[e] + offsetY, attrAngle);
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Greedy-Append 贪心排序算法
+        /// 
+        /// 从枢纽的邻居开始，每次选择与已放置实体连接最多的候选实体
+        /// 追加到序列末尾 → 有关系的实体尽量相邻，减少圆上边交叉
+        /// </summary>
+        private static List<string> GreedyAppendOrder(
+            string hub, List<ErEntity> entities,
+            Dictionary<string, HashSet<string>> neighbors,
+            Dictionary<string, int> degree)
+        {
+            var placed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { hub };
+            var order = new List<string>();
+
+            // 候选池：所有非枢纽实体
+            var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var e in entities)
+            {
+                if (!e.Name.Equals(hub, StringComparison.OrdinalIgnoreCase))
+                    candidates.Add(e.Name);
+            }
+
+            // 从枢纽的度数最高的邻居开始
+            string? first = null;
+            int bestDeg = -1;
+            foreach (var nb in neighbors[hub])
+            {
+                if (candidates.Contains(nb) && degree.GetValueOrDefault(nb, 0) > bestDeg)
+                {
+                    bestDeg = degree.GetValueOrDefault(nb, 0);
+                    first = nb;
+                }
+            }
+            // 如果枢纽没有邻居，取度数最高的候选
+            if (first == null)
+            {
+                foreach (var c in candidates)
+                {
+                    if (degree.GetValueOrDefault(c, 0) > bestDeg)
+                    {
+                        bestDeg = degree.GetValueOrDefault(c, 0);
+                        first = c;
+                    }
+                }
+            }
+            if (first == null && candidates.Count > 0) first = candidates.First();
+            if (first != null)
+            {
+                order.Add(first);
+                placed.Add(first);
+                candidates.Remove(first);
+            }
+
+            // 贪心追加：每次选与已放置实体连接最多的候选
+            while (candidates.Count > 0)
+            {
+                string? best = null;
+                int bestScore = -1;
+
+                foreach (var c in candidates)
+                {
+                    // 分数 = 与已放置实体的连接数（包括枢纽）
+                    int score = 0;
+                    foreach (var nb in neighbors.GetValueOrDefault(c, []))
+                    {
+                        if (placed.Contains(nb)) score++;
+                    }
+                    // 优先连接多的，平局时选度数高的
+                    if (score > bestScore || (score == bestScore &&
+                        degree.GetValueOrDefault(c, 0) > degree.GetValueOrDefault(best ?? "", 0)))
+                    {
+                        bestScore = score;
+                        best = c;
+                    }
+                }
+
+                if (best == null) best = candidates.First();
+                order.Add(best);
+                placed.Add(best);
+                candidates.Remove(best);
+            }
+
+            return order;
         }
 
         /// <summary>
