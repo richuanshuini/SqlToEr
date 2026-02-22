@@ -12,7 +12,8 @@ namespace SqlToER.Model
             "02.实体+3属性",
             "03.实体+主键",
             "04.双实体+1:N关系",
-            "05.完整示例(3表)"
+            "05.完整示例(3表)",
+            "06.5表(1:1+1:N+M:N)"
         ];
 
         /// <summary>
@@ -25,6 +26,7 @@ namespace SqlToER.Model
             3 => EntityWithPK(),
             4 => TwoEntities1N(),
             5 => FullExample(),
+            6 => FiveTablesAllRelations(),
             _ => null
         };
 
@@ -101,6 +103,54 @@ namespace SqlToER.Model
             [
                 new("BelongsTo", "Student", "ClassRoom", "1:N"),
                 new("Enrolls", "Student", "Course", "M:N")
+            ]
+        };
+
+        // ===== 06. 5表 — 同时包含 1:1、1:N、M:N =====
+        private static ErDocument FiveTablesAllRelations() => new()
+        {
+            Entities =
+            [
+                new("Department"),
+                new("Employee"),
+                new("Passport"),
+                new("Project"),
+                new("Skill")
+            ],
+            Attributes =
+            [
+                // Department
+                new("Department", "dept_id", true),
+                new("Department", "dept_name", false),
+                new("Department", "location", false),
+                // Employee
+                new("Employee", "emp_id", true),
+                new("Employee", "name", false),
+                new("Employee", "salary", false),
+                new("Employee", "hire_date", false),
+                // Passport
+                new("Passport", "passport_no", true),
+                new("Passport", "issue_date", false),
+                new("Passport", "expire_date", false),
+                // Project
+                new("Project", "proj_id", true),
+                new("Project", "proj_name", false),
+                new("Project", "budget", false),
+                // Skill
+                new("Skill", "skill_id", true),
+                new("Skill", "skill_name", false),
+                new("Skill", "level", false)
+            ],
+            Relationships =
+            [
+                // 1:N — 部门 → 员工
+                new("WorksIn", "Employee", "Department", "1:N"),
+                // 1:1 — 员工 ↔ 护照
+                new("Holds", "Employee", "Passport", "1:1"),
+                // M:N — 员工 ↔ 项目
+                new("AssignedTo", "Employee", "Project", "M:N"),
+                // M:N — 员工 ↔ 技能
+                new("HasSkill", "Employee", "Skill", "M:N")
             ]
         };
     }

@@ -157,52 +157,146 @@ namespace SqlToER.Service
         }
 
         /// <summary>
-        /// 画关系菱形（2D 形状）
+        /// 画关系菱形（2D 形状）+ 动态添加4角连接点
         /// </summary>
         public Visio.Shape DrawRelationship(string name, double x, double y)
         {
             var shape = _page.Drop(_relMaster, x, y);
             shape.Text = name;
             SetSize(shape, _relW, _relH);
+
+            // 动态添加菱形4角连接点（ForeignObject 无内置连接点）
+            try
+            {
+                short secConn = (short)Visio.VisSectionIndices.visSectionConnectionPts;
+                if (shape.get_SectionExists(secConn, 0) == 0)
+                    shape.AddSection(secConn);
+
+                // Row 0: 左角
+                AddConnectionPoint(shape, secConn, "Width*0", "Height*0.5");
+                // Row 1: 右角
+                AddConnectionPoint(shape, secConn, "Width*1", "Height*0.5");
+                // Row 2: 上角
+                AddConnectionPoint(shape, secConn, "Width*0.5", "Height*1");
+                // Row 3: 下角
+                AddConnectionPoint(shape, secConn, "Width*0.5", "Height*0");
+            }
+            catch { }
+
             return shape;
         }
 
         /// <summary>
+        /// 在形状上添加一个连接点（辅助方法）
+        /// </summary>
+        private static void AddConnectionPoint(Visio.Shape shape, short secConn,
+            string xFormula, string yFormula)
+        {
+            short row = shape.AddRow(secConn,
+                (short)Visio.VisRowIndices.visRowLast,
+                (short)Visio.VisRowTags.visTagCnnctPt);
+            shape.get_CellsSRC(secConn, row,
+                (short)Visio.VisCellIndices.visCnnctX).FormulaU = xFormula;
+            shape.get_CellsSRC(secConn, row,
+                (short)Visio.VisCellIndices.visCnnctY).FormulaU = yFormula;
+        }
+
+        /// <summary>
         /// 画关系连接线（DBCHEN 1D 形状，蓝色端点）
-        /// BeginX GlueTo from.PinX，EndX GlueTo to.PinX → 动态吸附
+        /// 优先 GlueTo 连接点（角尖），失败退到 GlueTo PinX，再失败退到坐标
         /// </summary>
         public Visio.Shape DrawConnector(Visio.Shape from, Visio.Shape to, string label = "")
         {
-            // Drop 在两形状中点
             double mx = (from.get_CellsU("PinX").ResultIU + to.get_CellsU("PinX").ResultIU) / 2;
             double my = (from.get_CellsU("PinY").ResultIU + to.get_CellsU("PinY").ResultIU) / 2;
             var conn = _page.Drop(_connMaster, mx, my);
 
-            // 1D 端点 GlueTo → 动态吸附到形状
-            try
-            {
-                conn.get_CellsU("BeginX").GlueTo(from.get_CellsU("PinX"));
-            }
-            catch
-            {
-                // GlueTo 失败 → 直接设置坐标
-                conn.get_CellsU("BeginX").ResultIU = from.get_CellsU("PinX").ResultIU;
-                conn.get_CellsU("BeginY").ResultIU = from.get_CellsU("PinY").ResultIU;
-            }
-
-            try
-            {
-                conn.get_CellsU("EndX").GlueTo(to.get_CellsU("PinX"));
-            }
-            catch
-            {
-                conn.get_CellsU("EndX").ResultIU = to.get_CellsU("PinX").ResultIU;
-                conn.get_CellsU("EndY").ResultIU = to.get_CellsU("PinY").ResultIU;
-            }
+            // BeginX → from 形状
+            GlueEndpoint(conn, "BeginX", "BeginY", from);
+            // EndX → to 形状
+            GlueEndpoint(conn, "EndX", "EndY", to);
 
             if (!string.IsNullOrEmpty(label))
                 conn.Text = label;
             return conn;
+        }
+
+        /// <summary>
+        /// 将 1D 连接线的端点吸附到目标形状
+        /// 优先: GlueTo 最近的连接点 → GlueTo PinX → 坐标设置
+        /// </summary>
+        private static void GlueEndpoint(Visio.Shape conn, string cellX, string cellY, Visio.Shape target)
+        {
+            // 尝试 GlueTo 连接点（如果目标有连接点，比如菱形的角尖）
+            short secConn = (short)Visio.VisSectionIndices.visSectionConnectionPts;
+            try
+            {
+                if (target.get_SectionExists(secConn, 0) != 0)
+                {
+                    // 找最近的连接点
+                    double connX = conn.get_CellsU(cellX).ResultIU;
+                    double connY = conn.get_CellsU(cellY).ResultIU;
+                    short bestRow = FindNearestConnectionPoint(target, secConn, connX, connY);
+
+                    if (bestRow >= 0)
+                    {
+                        var connPtCell = target.get_CellsSRC(secConn, bestRow,
+                            (short)Visio.VisCellIndices.visCnnctX);
+                        conn.get_CellsU(cellX).GlueTo(connPtCell);
+                        return;
+                    }
+                }
+            }
+            catch { }
+
+            // 退到 GlueTo PinX（实体矩形等无连接点的形状）
+            try
+            {
+                conn.get_CellsU(cellX).GlueTo(target.get_CellsU("PinX"));
+                return;
+            }
+            catch { }
+
+            // 最终兜底：坐标
+            conn.get_CellsU(cellX).ResultIU = target.get_CellsU("PinX").ResultIU;
+            conn.get_CellsU(cellY).ResultIU = target.get_CellsU("PinY").ResultIU;
+        }
+
+        /// <summary>
+        /// 在目标形状的连接点中找最近的一个
+        /// </summary>
+        private static short FindNearestConnectionPoint(Visio.Shape shape, short secConn,
+            double refX, double refY)
+        {
+            short rowCount = shape.get_RowCount(secConn);
+            if (rowCount == 0) return -1;
+
+            double pinX = shape.get_CellsU("PinX").ResultIU;
+            double pinY = shape.get_CellsU("PinY").ResultIU;
+            double locPinX = shape.get_CellsU("LocPinX").ResultIU;
+            double locPinY = shape.get_CellsU("LocPinY").ResultIU;
+
+            short bestRow = 0;
+            double bestDist = double.MaxValue;
+
+            for (short r = 0; r < rowCount; r++)
+            {
+                // 连接点局部坐标 → 页面坐标
+                double localX = shape.get_CellsSRC(secConn, r,
+                    (short)Visio.VisCellIndices.visCnnctX).ResultIU;
+                double localY = shape.get_CellsSRC(secConn, r,
+                    (short)Visio.VisCellIndices.visCnnctY).ResultIU;
+                double pageX = pinX - locPinX + localX;
+                double pageY = pinY - locPinY + localY;
+
+                double dist = (pageX - refX) * (pageX - refX) + (pageY - refY) * (pageY - refY);
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    bestRow = r;
+                }
+            }
+            return bestRow;
         }
 
         // ============================================================
