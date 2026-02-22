@@ -16,8 +16,9 @@ namespace SqlToER.Service
     {
         private readonly Visio.Page _page;
         private readonly Visio.Master _entityMaster;   // DBCHEN 实体（2D 矩形）
-        private readonly Visio.Master _attrMaster;     // DBCHEN 属性（1D：椭圆画在 Begin，线到 End）
+        private readonly Visio.Master _attrMaster;     // DBCHEN 属性（2D + Control Handle）
         private readonly Visio.Master _relMaster;      // DBCHEN 关系（菱形）
+        private readonly Visio.Master _connMaster;     // DBCHEN 关系连接线（1D，蓝色端点）
 
         // 排版参数
         private const double EntityY = 5.0;
@@ -34,12 +35,14 @@ namespace SqlToER.Service
             Visio.Page page,
             Visio.Master entityMaster,
             Visio.Master attrMaster,
-            Visio.Master relMaster)
+            Visio.Master relMaster,
+            Visio.Master connMaster)
         {
             _page = page;
             _entityMaster = entityMaster;
             _attrMaster = attrMaster;
             _relMaster = relMaster;
+            _connMaster = connMaster;
         }
 
         public void ApplyTemplateSizes(TemplateLayout tpl)
@@ -165,19 +168,41 @@ namespace SqlToER.Service
         }
 
         /// <summary>
-        /// 画连接线（用于关系↔实体的连接）
+        /// 画关系连接线（DBCHEN 1D 形状，蓝色端点）
+        /// BeginX GlueTo from.PinX，EndX GlueTo to.PinX → 动态吸附
         /// </summary>
         public Visio.Shape DrawConnector(Visio.Shape from, Visio.Shape to, string label = "")
         {
-            double x1 = from.get_CellsU("PinX").ResultIU;
-            double y1 = from.get_CellsU("PinY").ResultIU;
-            double x2 = to.get_CellsU("PinX").ResultIU;
-            double y2 = to.get_CellsU("PinY").ResultIU;
+            // Drop 在两形状中点
+            double mx = (from.get_CellsU("PinX").ResultIU + to.get_CellsU("PinX").ResultIU) / 2;
+            double my = (from.get_CellsU("PinY").ResultIU + to.get_CellsU("PinY").ResultIU) / 2;
+            var conn = _page.Drop(_connMaster, mx, my);
 
-            var line = _page.DrawLine(x1, y1, x2, y2);
+            // 1D 端点 GlueTo → 动态吸附到形状
+            try
+            {
+                conn.get_CellsU("BeginX").GlueTo(from.get_CellsU("PinX"));
+            }
+            catch
+            {
+                // GlueTo 失败 → 直接设置坐标
+                conn.get_CellsU("BeginX").ResultIU = from.get_CellsU("PinX").ResultIU;
+                conn.get_CellsU("BeginY").ResultIU = from.get_CellsU("PinY").ResultIU;
+            }
+
+            try
+            {
+                conn.get_CellsU("EndX").GlueTo(to.get_CellsU("PinX"));
+            }
+            catch
+            {
+                conn.get_CellsU("EndX").ResultIU = to.get_CellsU("PinX").ResultIU;
+                conn.get_CellsU("EndY").ResultIU = to.get_CellsU("PinY").ResultIU;
+            }
+
             if (!string.IsNullOrEmpty(label))
-                line.Text = label;
-            return line;
+                conn.Text = label;
+            return conn;
         }
 
         // ============================================================

@@ -50,10 +50,11 @@ namespace SqlToER.Service
                 var entityMaster = FindMaster(chenStencil, ["Entity", "实体"]);
                 var attrMaster = FindMaster(chenStencil, ["Attribute", "属性"]);
                 var relMaster = FindMaster(chenStencil, ["Relationship", "关系"]);
+                var connMaster = FindMaster(chenStencil, ["Relationship connector", "关系连接线"]);
 
-                onStatus?.Invoke($"模具：{entityMaster.Name} / {attrMaster.Name} / {relMaster.Name}");
+                onStatus?.Invoke($"模具：{entityMaster.Name}/{attrMaster.Name}/{relMaster.Name}/{connMaster.Name}");
 
-                var painter = new ErDiagramPainter(page, entityMaster, attrMaster, relMaster);
+                var painter = new ErDiagramPainter(page, entityMaster, attrMaster, relMaster, connMaster);
 
                 if (tpl != null)
                     painter.ApplyTemplateSizes(tpl);
