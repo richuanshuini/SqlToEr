@@ -1127,6 +1127,35 @@ namespace SqlToER.Service
                 if (!moved) break;
             }
 
+            // 3c. 属性感知微调推开 — 用膨胀半径检测可视重叠
+            for (int pass = 0; pass < 30; pass++)
+            {
+                bool moved2 = false;
+                for (int i = 0; i < entityNames.Count; i++)
+                {
+                    for (int j = i + 1; j < entityNames.Count; j++)
+                    {
+                        string u = entityNames[i], v = entityNames[j];
+                        double dx = posX[u] - posX[v], dy = posY[u] - posY[v];
+                        double dist = Math.Sqrt(dx * dx + dy * dy);
+                        // 膨胀半径 = 物理半径 + 属性椭圆宽度，模拟属性扇面的实际占地
+                        double visualR_u = nodeRadius[u] + _attrW;
+                        double visualR_v = nodeRadius[v] + _attrW;
+                        double minVisual = visualR_u + visualR_v;
+                        if (dist < minVisual)
+                        {
+                            if (dist < 0.01) { dx = 1; dy = 0; dist = 1; }
+                            // 温和推开：每次只推一小步，避免破坏布局
+                            double push = Math.Min((minVisual - dist) / 2.0 + 0.05, 0.3);
+                            double nx = dx / dist, ny = dy / dist;
+                            posX[u] += nx * push; posY[u] += ny * push;
+                            posX[v] -= nx * push; posY[v] -= ny * push;
+                            moved2 = true;
+                        }
+                    }
+                }
+                if (!moved2) break;
+            }
             // ============================================================
             // 阶段 4：归一化 — 只输出实体坐标
             // ============================================================
@@ -1145,51 +1174,6 @@ namespace SqlToER.Service
 
             return result;
         }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
         /// <summary>
         /// 计算每个关系菱形的位置
