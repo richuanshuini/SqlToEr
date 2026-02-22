@@ -245,16 +245,42 @@ namespace SqlToER.Service
 
         /// <summary>
         /// 将 1D 连接线的端点吸附到目标形状
-        /// 统一使用连接点吸附（菱形角尖 or 实体边缘专用点）
+        /// - 菱形：用最近的预置角尖连接点（不添加新连接点）
+        /// - 实体：用 AddDirectionalConnPt 添加朝向对方的边缘连接点
         /// </summary>
         private static void GlueEndpoint(Visio.Shape conn, string cellX, string cellY,
             Visio.Shape target, Visio.Shape? referenceShape = null)
         {
             short secConn = (short)Visio.VisSectionIndices.visSectionConnectionPts;
 
-            // 如果有参考形状，在 target 上添加朝向参考形状的连接点
-            if (referenceShape != null)
+            // 判断 target 是否为菱形（关系形状）
+            // 菱形的几何是旋转45°的正方形，不能用 AddDirectionalConnPt（矩形公式）
+            bool isDiamond = IsDiamondShape(target);
+
+            if (isDiamond && referenceShape != null)
             {
+                // 菱形：用 referenceShape 的位置找最近的角尖连接点
+                try
+                {
+                    if (target.get_SectionExists(secConn, 0) != 0)
+                    {
+                        double refPX = referenceShape.get_CellsU("PinX").ResultIU;
+                        double refPY = referenceShape.get_CellsU("PinY").ResultIU;
+                        short bestRow = FindNearestConnectionPoint(target, secConn, refPX, refPY);
+                        if (bestRow >= 0)
+                        {
+                            conn.get_CellsU(cellX).GlueTo(
+                                target.get_CellsSRC(secConn, bestRow,
+                                    (short)Visio.VisCellIndices.visCnnctX));
+                            return;
+                        }
+                    }
+                }
+                catch { }
+            }
+            else if (!isDiamond && referenceShape != null)
+            {
+                // 实体：添加朝向对方的边缘连接点
                 try
                 {
                     short cpRow = AddDirectionalConnPt(target, referenceShape);
@@ -269,7 +295,7 @@ namespace SqlToER.Service
                 catch { }
             }
 
-            // 退到最近连接点
+            // 回退：最近连接点
             try
             {
                 if (target.get_SectionExists(secConn, 0) != 0)
@@ -288,7 +314,7 @@ namespace SqlToER.Service
             }
             catch { }
 
-            // 退到 PinX
+            // 回退：PinX
             try
             {
                 conn.get_CellsU(cellX).GlueTo(target.get_CellsU("PinX"));
@@ -298,6 +324,32 @@ namespace SqlToER.Service
 
             conn.get_CellsU(cellX).ResultIU = target.get_CellsU("PinX").ResultIU;
             conn.get_CellsU(cellY).ResultIU = target.get_CellsU("PinY").ResultIU;
+        }
+
+        /// <summary>
+        /// 判断形状是否为菱形（关系形状）
+        /// 检查方式：菱形由 DrawRelationship 创建，预置了4个角尖连接点
+        /// Width*0/Height*0.5, Width*1/Height*0.5, Width*0.5/Height*1, Width*0.5/Height*0
+        /// </summary>
+        private static bool IsDiamondShape(Visio.Shape shape)
+        {
+            try
+            {
+                // 菱形的几何 Section 通常有旋转45°的路径
+                // 最可靠的判断：检查是否有恰好 4 个连接点且位置符合角尖模式
+                short secConn = (short)Visio.VisSectionIndices.visSectionConnectionPts;
+                if (shape.get_SectionExists(secConn, 0) == 0) return false;
+
+                short rows = shape.get_RowCount(secConn);
+                if (rows < 4) return false;
+
+                // 检查前 4 个连接点的公式是否匹配角尖模式
+                string x0 = shape.get_CellsSRC(secConn, 0, (short)Visio.VisCellIndices.visCnnctX).FormulaU;
+                string y0 = shape.get_CellsSRC(secConn, 0, (short)Visio.VisCellIndices.visCnnctY).FormulaU;
+                // 第一个角尖: Width*0, Height*0.5 (左角)
+                return x0.Contains("Width*0") && y0.Contains("Height*0.5");
+            }
+            catch { return false; }
         }
 
         /// <summary>
@@ -391,20 +443,25 @@ namespace SqlToER.Service
 
         /// <summary>
         /// 画实体 + 伞形属性
-        /// centerAngle: 属性扇面的中心方向（弧度），默认朝上 PI/2
+        /// centerAngle: 属性扇面的中心方向（弧度）
+        /// maxGap: 可用角度间隙
+        /// dynRadius: 动态计算的属性半径
         /// </summary>
         public Visio.Shape DrawEntityWithAttrs(
             string entityName, List<ErAttribute> attrs, double x, double y,
-            double centerAngle = Math.PI / 2, double maxGap = Math.PI)
+            double centerAngle = Math.PI / 2, double maxGap = Math.PI,
+            double dynRadius = AttrRadius)
         {
             var entity = DrawEntity(entityName, x, y);
 
             int n = attrs.Count;
             if (n == 0) return entity;
 
-            // 扇面张角：基于椭圆宽度和半径动态计算
-            // 同时限制在可用间隙内（留 0.3 弧度安全边距）
-            double minStep = (_attrW * 1.2) / AttrRadius;
+            double r = dynRadius;
+
+            // 扇面张角：基于椭圆宽度和动态半径计算
+            // 同时限制在可用间隙内
+            double minStep = (_attrW * 1.2) / r;
             double idealSpan = (n + 1) * minStep;
             double availableGap = Math.Max(maxGap - 0.3, minStep * 2);
             double fanSpan = Math.Min(idealSpan, availableGap);
@@ -414,8 +471,8 @@ namespace SqlToER.Service
             for (int i = 0; i < n; i++)
             {
                 double angle = startAngle + (i + 1) * angleStep;
-                double ax = x + AttrRadius * Math.Cos(angle);
-                double ay = y + AttrRadius * Math.Sin(angle);
+                double ax = x + r * Math.Cos(angle);
+                double ay = y + r * Math.Sin(angle);
 
                 DrawAttribute(attrs[i].Name, ax, ay, entity, attrs[i].IsPrimaryKey);
             }
@@ -476,9 +533,10 @@ namespace SqlToER.Service
         // ============================================================
 
         /// <summary>
-        /// 布局结果：每个实体的位置 + 属性扇面方向 + 可用间隙大小
+        /// 布局结果：每个实体的位置 + 属性扇面方向 + 可用间隙 + 动态半径
         /// </summary>
-        private record EntityPlacement(double X, double Y, double AttrAngle, double AttrGap = Math.PI);
+        private record EntityPlacement(double X, double Y, double AttrAngle,
+            double AttrGap = Math.PI, double DynRadius = AttrRadius);
 
         public void DrawErDiagram(ErDocument erDoc, Action<string>? onStatus = null)
         {
@@ -502,7 +560,7 @@ namespace SqlToER.Service
                 if (!layout.TryGetValue(entity.Name, out var place)) continue;
                 var attrs = attrsByEntity.GetValueOrDefault(entity.Name, []);
                 var shape = DrawEntityWithAttrs(entity.Name, attrs,
-                    place.X, place.Y, place.AttrAngle, place.AttrGap);
+                    place.X, place.Y, place.AttrAngle, place.AttrGap, place.DynRadius);
                 entityShapes[entity.Name] = shape;
             }
 
@@ -520,12 +578,40 @@ namespace SqlToER.Service
                 }
             }
 
-            // ---- 步骤4: Visio 兜底路由优化 ----
+            // ---- 步骤4: Visio Layout 融合 — 锁定形状 + 路由优化 ----
             onStatus?.Invoke("正在优化连线路由...");
             try
             {
+                // 4a. 锁定所有 2D 形状位置，让 Page.Layout 只重排连线
+                foreach (Visio.Shape s in _page.Shapes)
+                {
+                    try
+                    {
+                        // 判断是否为 1D 连接线（OneDBegin/OneDEnd 存在则为 1D）
+                        bool is1D = false;
+                        try { is1D = s.OneD != 0; } catch { }
+
+                        if (!is1D)
+                        {
+                            // 2D 形状：锁定位置 + 不可让连线压在上面
+                            s.get_CellsU("ShapeFixedCode").FormulaU = "3";
+                            // visSLOFixedPlacement(1) | visSLOFixedPlow(2) = 3
+                        }
+                    }
+                    catch { }
+                }
+
+                // 4b. 配置页面级路由参数
                 var pageSheet = _page.PageSheet;
-                pageSheet.get_CellsU("RouteStyle").FormulaU = "5"; // visLORouteFlowchartNS
+                pageSheet.get_CellsU("RouteStyle").FormulaU = "16";
+                // 16 = visLORouteCenterToCenter
+                pageSheet.get_CellsU("LineRouteExt").FormulaU = "1";
+                // 1 = 直线
+                pageSheet.get_CellsU("PlaceStyle").FormulaU = "0";
+                // 0 = 不重新放置，只路由
+
+                // 4c. 调用 Visio 内置布局引擎 — 只重排连线
+                _page.Layout();
             }
             catch { }
 
@@ -533,16 +619,20 @@ namespace SqlToER.Service
         }
 
         /// <summary>
-        /// 角度分区算法 — 为每个实体找到最大关系线间隙，将属性扇面放入
+        /// 角度分区 + 动态半径算法
         /// 
-        /// 1. 收集每个实体的所有关系线方向角（到菱形位置）
-        /// 2. 对角度排序，找到最大间隙
-        /// 3. AttrAngle = 最大间隙的中心
-        /// → 属性椭圆永远在关系线之间的空隙中
+        /// 1. 收集每个实体的所有关系线方向角
+        /// 2. 找最大间隙，属性放入间隙
+        /// 3. dynRadius = max(baseR, numAttrs × attrW × 1.3 / gap)
         /// </summary>
         private Dictionary<string, EntityPlacement> OptimizeAttrAngles(
             ErDocument erDoc, Dictionary<string, EntityPlacement> layout)
         {
+            // 属性计数
+            var attrCounts = erDoc.Attributes
+                .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
             // 预计算菱形位置
             var diamondPos = CalculateDiamondPositions(erDoc, layout);
 
@@ -555,54 +645,59 @@ namespace SqlToER.Service
                 var rel = erDoc.Relationships[i];
                 var (dX, dY) = diamondPos[i];
 
-                // Entity1 → 菱形方向
                 if (layout.TryGetValue(rel.Entity1, out var p1))
-                {
-                    double angle = Math.Atan2(dY - p1.Y, dX - p1.X);
-                    lineAngles[rel.Entity1].Add(angle);
-                }
-                // Entity2 → 菱形方向
+                    lineAngles[rel.Entity1].Add(Math.Atan2(dY - p1.Y, dX - p1.X));
                 if (layout.TryGetValue(rel.Entity2, out var p2))
-                {
-                    double angle = Math.Atan2(dY - p2.Y, dX - p2.X);
-                    lineAngles[rel.Entity2].Add(angle);
-                }
+                    lineAngles[rel.Entity2].Add(Math.Atan2(dY - p2.Y, dX - p2.X));
             }
 
-            // 对每个实体，找最大间隙的中心作为 AttrAngle
             var result = new Dictionary<string, EntityPlacement>(StringComparer.OrdinalIgnoreCase);
             foreach (var kv in layout)
             {
+                int numAttrs = attrCounts.GetValueOrDefault(kv.Key, 0);
                 var angles = lineAngles[kv.Key];
+
+                double maxGap, bestMid;
+
                 if (angles.Count == 0)
                 {
-                    result[kv.Key] = kv.Value; // 没有关系，保持原方向
-                    continue;
+                    // 没有关系线，全 360° 可用
+                    maxGap = 2 * Math.PI;
+                    bestMid = kv.Value.AttrAngle;
                 }
-
-                // 归一化到 [0, 2π)
-                for (int i = 0; i < angles.Count; i++)
+                else
                 {
-                    angles[i] = ((angles[i] % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-                }
-                angles.Sort();
+                    // 归一化到 [0, 2π)
+                    for (int i = 0; i < angles.Count; i++)
+                        angles[i] = ((angles[i] % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+                    angles.Sort();
 
-                // 找最大间隙
-                double maxGap = 0;
-                double bestMid = kv.Value.AttrAngle;
-
-                for (int i = 0; i < angles.Count; i++)
-                {
-                    double next = (i + 1 < angles.Count) ? angles[i + 1] : angles[0] + 2 * Math.PI;
-                    double gap = next - angles[i];
-                    if (gap > maxGap)
+                    maxGap = 0;
+                    bestMid = kv.Value.AttrAngle;
+                    for (int i = 0; i < angles.Count; i++)
                     {
-                        maxGap = gap;
-                        bestMid = angles[i] + gap / 2.0;
+                        double next = (i + 1 < angles.Count) ? angles[i + 1] : angles[0] + 2 * Math.PI;
+                        double gap = next - angles[i];
+                        if (gap > maxGap)
+                        {
+                            maxGap = gap;
+                            bestMid = angles[i] + gap / 2.0;
+                        }
                     }
                 }
 
-                result[kv.Key] = new EntityPlacement(kv.Value.X, kv.Value.Y, bestMid, maxGap);
+                // 动态半径：确保所有属性在可用间隙内不重叠
+                double dynR = AttrRadius;
+                if (numAttrs > 0)
+                {
+                    double usableGap = Math.Max(maxGap - 0.3, 0.5);
+                    // 需要的弧长 = numAttrs × 椭圆宽度 × 1.3
+                    double neededArc = numAttrs * _attrW * 1.3;
+                    double neededR = neededArc / usableGap;
+                    dynR = Math.Max(AttrRadius, neededR);
+                }
+
+                result[kv.Key] = new EntityPlacement(kv.Value.X, kv.Value.Y, bestMid, maxGap, dynR);
             }
 
             return result;
@@ -626,8 +721,14 @@ namespace SqlToER.Service
 
             if (count == 0) return result;
 
-            // 每个实体需要的最小安全距离（含属性扇面 + 菱形空间）
-            double safeDistance = 2 * AttrRadius + 3.0;
+            // 动态安全距离：基于最大属性数量估算半径
+            var attrCounts = erDoc.Attributes
+                .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+            int maxAttrs = attrCounts.Count > 0 ? attrCounts.Values.Max() : 0;
+            // 最大属性数实体的估算半径（假设 PI 弧度可用）
+            double maxR = Math.Max(AttrRadius, maxAttrs * _attrW * 1.3 / Math.PI);
+            double safeDistance = 2 * maxR + 2.0;
 
             // === 边缘情况：只有1个实体 ===
             if (count == 1)
