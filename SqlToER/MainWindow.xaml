@@ -1,0 +1,298 @@
+﻿<Window x:Class="SqlToER.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="clr-namespace:SqlToER.ViewModel"
+        mc:Ignorable="d"
+        Title="SqlToER — SQL 转 ER 图工具"
+        Height="700" Width="1100"
+        MinHeight="500" MinWidth="800"
+        WindowStartupLocation="CenterScreen"
+        Background="#F5F6FA">
+
+    <Window.DataContext>
+        <vm:MainWindowViewModel />
+    </Window.DataContext>
+
+    <Window.Resources>    
+        <!-- 布尔 → Visibility 转换器 -->
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+
+        <!-- 统一圆角按钮样式 -->
+        <Style x:Key="AccentButtonStyle" TargetType="Button">
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding" Value="20,12" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="8"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Opacity" Value="0.85" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Opacity" Value="0.7" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="border" Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 区域卡片容器样式 -->
+        <Style x:Key="CardBorder" TargetType="Border">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="Padding" Value="20" />
+            <Setter Property="Effect">
+                <Setter.Value>
+                    <DropShadowEffect BlurRadius="16" ShadowDepth="2"
+                                     Opacity="0.08" Color="Black" />
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 区域标题文字样式 -->
+        <Style x:Key="SectionTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Foreground" Value="#2D3748" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+        </Style>
+    </Window.Resources>
+
+    <!-- 根容器 -->
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="4*" />
+            <ColumnDefinition Width="16" />  <!-- 间距列 -->
+            <ColumnDefinition Width="6*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- ===== 顶部栏：模型选择 + 配置按钮 ===== -->
+        <StackPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,0,0,10">
+
+            <!-- 模型选择标签 -->
+            <TextBlock Text="🤖 AI 模型："
+                       VerticalAlignment="Center"
+                       FontSize="13"
+                       Foreground="#4A5568"
+                       Margin="0,0,6,0" />
+
+            <!-- 模型下拉框 -->
+            <ComboBox Width="260"
+                      Height="34"
+                      FontSize="13"
+                      VerticalContentAlignment="Center"
+                      ItemsSource="{Binding AvailableModels}"
+                      SelectedItem="{Binding SelectedModelItem}"
+                      DisplayMemberPath="DisplayName">
+                <ComboBox.Resources>
+                    <Style TargetType="Border">
+                        <Setter Property="CornerRadius" Value="6" />
+                    </Style>
+                </ComboBox.Resources>
+            </ComboBox>
+
+            <!-- 刷新按钮 -->
+            <Button Content="🔄"
+                    Margin="6,0,16,0"
+                    Padding="8,4"
+                    FontSize="14"
+                    ToolTip="刷新模型列表"
+                    Background="#E2E8F0"
+                    Foreground="#4A5568"
+                    BorderThickness="0"
+                    Cursor="Hand"
+                    Command="{Binding RefreshModelsCommand}" />
+
+            <!-- 配置按钮 -->
+            <Button Content="⚙ 大模型配置"
+                    Background="#805AD5"
+                    Style="{StaticResource AccentButtonStyle}"
+                    Padding="16,8"
+                    FontSize="13"
+                    Command="{Binding OpenAiConfigCommand}" />
+        </StackPanel>
+
+        <!-- ==================== 左侧：输入区 ==================== -->
+        <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource CardBorder}">
+            <DockPanel>
+                <!-- 标题 -->
+                <TextBlock DockPanel.Dock="Top"
+                           Style="{StaticResource SectionTitle}"
+                           Text="📝 SQL / DDL 输入" />
+
+                <!-- 底部：模板 + 解析按钮 -->
+                <StackPanel DockPanel.Dock="Bottom" Margin="0,14,0,0">
+
+                    <!-- 参考模板区域 -->
+                    <DockPanel Margin="0,0,0,10">
+                        <TextBlock Text="📐 参考模板："
+                                   VerticalAlignment="Center"
+                                   FontSize="12.5"
+                                   Foreground="#4A5568"
+                                   Margin="0,0,6,0" />
+                        <Button DockPanel.Dock="Right"
+                                Content="✕"
+                                Padding="6,2"
+                                FontSize="12"
+                                Background="#E2E8F0"
+                                Foreground="#718096"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                ToolTip="清除模板"
+                                Command="{Binding ClearTemplateCommand}"
+                                Margin="4,0,0,0" />
+                        <Button DockPanel.Dock="Right"
+                                Content="选择文件..."
+                                Padding="10,4"
+                                FontSize="12"
+                                Background="#6366F1"
+                                Foreground="White"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                Command="{Binding ImportTemplateCommand}" />
+                        <TextBlock Text="{Binding TemplatePath}"
+                                   VerticalAlignment="Center"
+                                   FontSize="12"
+                                   Foreground="#718096"
+                                   TextTrimming="CharacterEllipsis"
+                                   Margin="6,0,0,0" />
+                    </DockPanel>
+
+                    <!-- 解析按钮 -->
+                    <Button Content="🚀 1. AI 解析并生成结构"
+                            Background="#6366F1"
+                            Style="{StaticResource AccentButtonStyle}"
+                            Command="{Binding ParseSqlCommand}" />
+                </StackPanel>
+
+                <!-- SQL 输入框 -->
+                <TextBox Text="{Binding SqlInput, UpdateSourceTrigger=PropertyChanged}"
+                         AcceptsReturn="True"
+                         AcceptsTab="True"
+                         TextWrapping="Wrap"
+                         VerticalScrollBarVisibility="Auto"
+                         HorizontalScrollBarVisibility="Auto"
+                         FontFamily="Consolas"
+                         FontSize="13.5"
+                         Padding="10"
+                         BorderBrush="#E2E8F0"
+                         BorderThickness="1"
+                         Background="#FAFBFC">
+                    <TextBox.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="8" />
+                        </Style>
+                    </TextBox.Resources>
+                </TextBox>
+            </DockPanel>
+        </Border>
+
+        <!-- ==================== 右侧：输出与操作区 ==================== -->
+        <Border Grid.Row="1" Grid.Column="2" Style="{StaticResource CardBorder}">
+            <DockPanel>
+                <!-- 标题 -->
+                <TextBlock DockPanel.Dock="Top"
+                           Style="{StaticResource SectionTitle}"
+                           Text="📋 AI 解析的 JSON 预览" />
+
+                <!-- 底部区域：进度 + 状态 + 导出按钮 -->
+                <StackPanel DockPanel.Dock="Bottom" Margin="0,14,0,0">
+
+                    <!-- 进度条（加载时显示，更醒目） -->
+                    <ProgressBar Height="6"
+                                 IsIndeterminate="True"
+                                 Margin="0,0,0,6"
+                                 Foreground="#6366F1"
+                                 Background="#E2E8F0"
+                                 Visibility="{Binding IsLoading, Converter={StaticResource BoolToVis}}" />
+
+                    <!-- 状态提示（加大字号 + 图标感知） -->
+                    <TextBlock Text="{Binding StatusText}"
+                               FontSize="13.5"
+                               FontWeight="Medium"
+                               Foreground="#4A5568"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,12" />
+
+                    <!-- 导出按钮 -->
+                    <Button Content="💾 2. 导出 VSDX (陈氏 ER 图)"
+                            Background="#10B981"
+                            Style="{StaticResource AccentButtonStyle}"
+                            Command="{Binding ExportVsdxCommand}" />
+
+                    <!-- ═══ 测试模板区域 ═══ -->
+                    <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0"
+                            Margin="0,12,0,0" Padding="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="🧪 绘图测试模板"
+                                       FontWeight="SemiBold" FontSize="13"
+                                       Foreground="#4A5568" Margin="0,0,0,6" />
+                            <ComboBox ItemsSource="{Binding TestTemplateItems}"
+                                      SelectedIndex="{Binding SelectedTestTemplateIndex}"
+                                      Margin="0,0,0,8" Padding="6,4" FontSize="13" />
+                            <Button Content="🔬 测试导出选中模板"
+                                    Background="#8B5CF6"
+                                    Style="{StaticResource AccentButtonStyle}"
+                                    Command="{Binding ExportTestTemplateCommand}"
+                                    IsEnabled="{Binding CanExportTest}" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 打开文件按钮（导出成功后显示） -->
+                    <Button Content="📂 打开导出的文件"
+                            Background="#3B82F6"
+                            Margin="0,8,0,0"
+                            Style="{StaticResource AccentButtonStyle}"
+                            Command="{Binding OpenExportedFileCommand}"
+                            Visibility="{Binding CanOpenFile, Converter={StaticResource BoolToVis}}" />
+                </StackPanel>
+
+                <!-- JSON 预览框 -->
+                <TextBox Text="{Binding JsonPreview, Mode=OneWay}"
+                         IsReadOnly="True"
+                         AcceptsReturn="True"
+                         TextWrapping="Wrap"
+                         VerticalScrollBarVisibility="Auto"
+                         HorizontalScrollBarVisibility="Auto"
+                         FontFamily="Consolas"
+                         FontSize="13.5"
+                         Padding="10"
+                         Background="#F7FAFC"
+                         BorderBrush="#E2E8F0"
+                         BorderThickness="1"
+                         Foreground="#2D3748">
+                    <TextBox.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="8" />
+                        </Style>
+                    </TextBox.Resources>
+                </TextBox>
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>
