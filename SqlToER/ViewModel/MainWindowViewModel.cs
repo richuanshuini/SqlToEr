@@ -62,9 +62,31 @@ namespace SqlToER.ViewModel
         [ObservableProperty] private string _optimizeRoundText = "";
         private ErDocument? _lastExportedErDoc;
 
+        // ===== 优化轮次下拉框 =====
+        public int[] OptimizeRoundOptions => [1, 2, 3, 5, 10];
+        [ObservableProperty] private int _selectedOptimizeRoundIndex = 2; // 默认 3 轮
+
         public MainWindowViewModel()
         {
             LoadAvailableModels();
+        }
+
+        /// <summary>
+        /// 导出核心逻辑（不管理 IsLoading，供多处复用）
+        /// </summary>
+        private async Task DoExportCoreAsync(ErDocument erDoc, string savePath)
+        {
+            var service = new VisioExportService();
+            var tpl = _templateLayout;
+
+            await RunOnStaThreadAsync(() =>
+                service.ExportToVsdx(erDoc, savePath, tpl, s => UpdateStatus(s)));
+
+            LastExportPath = savePath;
+            CanOpenFile = true;
+            _lastExportedErDoc = erDoc;
+            OptimizeRound = 0;
+            OptimizeRoundText = "";
         }
 
         // ============ 测试模板导出 ============
@@ -198,6 +220,25 @@ namespace SqlToER.ViewModel
                 _currentErDoc = doc;
                 JsonPreview = rawJson;
                 UpdateStatus($"✅ 使用 {modelName} 解析完成{(hasTemplate ? "（含布局坐标）" : "")}");
+
+                // 自动弹出保存对话框
+                var saveDlg = new Microsoft.Win32.SaveFileDialog
+                {
+                    Filter = "Visio 文件 (*.vsdx)|*.vsdx",
+                    DefaultExt = ".vsdx",
+                    FileName = "ER_Diagram"
+                };
+
+                if (saveDlg.ShowDialog() == true)
+                {
+                    UpdateStatus("正在调用 Visio 引擎生成图形...");
+                    await DoExportCoreAsync(doc, saveDlg.FileName);
+                    UpdateStatus($"✅ 导出成功：{saveDlg.FileName}");
+                }
+                else
+                {
+                    UpdateStatus("✅ 解析完成（未导出，可稍后手动点击导出按钮）");
+                }
             }
             catch (HttpRequestException ex)
             {
@@ -246,20 +287,8 @@ namespace SqlToER.ViewModel
 
             try
             {
-                var savePath = dialog.FileName;
-                var erDoc = _currentErDoc;
-                var service = new VisioExportService();
-                var tpl = _templateLayout;
-
-                await RunOnStaThreadAsync(() =>
-                    service.ExportToVsdx(erDoc, savePath, tpl, s => UpdateStatus(s)));
-
-                LastExportPath = savePath;
-                CanOpenFile = true;
-                _lastExportedErDoc = erDoc;
-                OptimizeRound = 0;
-                OptimizeRoundText = "";
-                UpdateStatus($"✅ 导出成功：{savePath}");
+                await DoExportCoreAsync(_currentErDoc, dialog.FileName);
+                UpdateStatus($"✅ 导出成功：{dialog.FileName}");
             }
             catch (InvalidOperationException ex) { UpdateStatus($"❌ {ex.Message}"); }
             catch (COMException ex) { UpdateStatus($"❌ Visio 错误：{ex.Message}"); }
@@ -272,14 +301,7 @@ namespace SqlToER.ViewModel
         {
             if (_lastExportedErDoc == null || string.IsNullOrEmpty(LastExportPath)) return;
 
-            // 弹出轮次设置对话框
-            var dialog = new View.OptimizeRoundDialog
-            {
-                Owner = Application.Current.MainWindow
-            };
-            if (dialog.ShowDialog() != true) return;
-
-            int totalRounds = dialog.Rounds;
+            int totalRounds = OptimizeRoundOptions[SelectedOptimizeRoundIndex];
             IsLoading = true;
             try
             {

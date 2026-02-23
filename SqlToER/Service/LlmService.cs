@@ -34,6 +34,17 @@ namespace SqlToER.Service
             - 若 Entity1 外键非主键 → 1:N（Entity2 一端，Entity1 多端）
             - 中间表（表仅含两个外键且它们构成联合主键）→ M:N，Name 取中间表名
             - 若无外键约束，则 Relationships 为空数组
+
+            ## 严格格式约束（必须遵守）
+            1. **Cardinality 值**：只允许三种字符串之一：`"1:1"`, `"1:N"`, `"M:N"`。
+               - 禁止使用 "N:1"、"N:M"、"many-to-many"、"one-to-many" 等其他写法。
+               - 如果实际是 N:1，请交换 Entity1 和 Entity2 的位置使其变为 1:N。
+            2. **Relationship.Name 命名**：使用简短的英文 PascalCase 动词短语，如 "BelongsTo"、"Has"、"Enrolls"、"Contains"。
+               - 禁止使用中文、长句子或含空格的描述。
+            3. **属性完整性**：表中的每一个字段（包括外键字段）都必须出现在 Attributes 数组中。
+               - 外键字段也是该表的属性，IsPrimaryKey 根据它是否是主键来判定。
+            4. **中间表（M:N）处理**：仅含两个外键且构成联合主键的表，只作为 Relationship 出现（Name 取表名），不要放入 Entities 中。
+               - 中间表自身的字段不需要作为 Attributes 输出。
             """;
 
         // 无模板时的 JSON Schema
