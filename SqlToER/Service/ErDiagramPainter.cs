@@ -545,41 +545,67 @@ namespace SqlToER.Service
                 .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 
             // ==================================================================
-            // 阶段 1: MSAGL 初始布局
+            // 分层判定
             // ==================================================================
-            onStatus?.Invoke($"正在计算初始布局（MSAGL，{erDoc.Entities.Count}个实体）...");
-            var msaglCoords = MsaglLayoutService.CalculateLayout(
-                erDoc, _entityW, _entityH, _attrW, _relW, _relH);
+            var tier = LayoutTier.Detect(erDoc);
+            onStatus?.Invoke($"布局档位: {tier.Level}（{erDoc.Entities.Count}实体/{erDoc.Attributes.Count}属性/{erDoc.Relationships.Count}关系）");
 
-            var allCoords = new Dictionary<string, (double X, double Y)>(StringComparer.OrdinalIgnoreCase);
-            foreach (var kv in msaglCoords)
-                allCoords[kv.Key] = (kv.Value.X, kv.Value.Y);
+            Dictionary<string, (double X, double Y)> allCoords;
 
-            // 补充菱形坐标（如果缺少，用实体中点）
-            for (int i = 0; i < erDoc.Relationships.Count; i++)
+            if (tier.UseForceAlign)
             {
-                var rel = erDoc.Relationships[i];
-                string dId = $"◇{rel.Name}_{i}";
-                if (!allCoords.ContainsKey(dId))
+                // T2/T3: ForceAlign 骨架布局（独立计算，不需要 MSAGL）
+                onStatus?.Invoke("正在计算骨架布局（ForceAlign）...");
+                allCoords = ForceAlignLayoutService.Layout(
+                    erDoc, _entityW, _entityH, _attrW, _relW, _relH);
+            }
+            else
+            {
+                // T1: MSAGL MDS 初始布局
+                onStatus?.Invoke($"正在计算初始布局（MSAGL，{erDoc.Entities.Count}个实体）...");
+                var msaglCoords = MsaglLayoutService.CalculateLayout(
+                    erDoc, _entityW, _entityH, _attrW, _relW, _relH);
+
+                allCoords = new Dictionary<string, (double X, double Y)>(StringComparer.OrdinalIgnoreCase);
+                foreach (var kv in msaglCoords)
+                    allCoords[kv.Key] = (kv.Value.X, kv.Value.Y);
+
+                // 补充菱形坐标
+                for (int i = 0; i < erDoc.Relationships.Count; i++)
                 {
-                    if (allCoords.TryGetValue(rel.Entity1, out var e1) &&
-                        allCoords.TryGetValue(rel.Entity2, out var e2))
-                        allCoords[dId] = ((e1.X + e2.X) / 2, (e1.Y + e2.Y) / 2);
+                    var rel = erDoc.Relationships[i];
+                    string dId = $"◇{rel.Name}_{i}";
+                    if (!allCoords.ContainsKey(dId))
+                    {
+                        if (allCoords.TryGetValue(rel.Entity1, out var e1) &&
+                            allCoords.TryGetValue(rel.Entity2, out var e2))
+                            allCoords[dId] = ((e1.X + e2.X) / 2, (e1.Y + e2.Y) / 2);
+                    }
                 }
             }
 
             // ==================================================================
-            // 阶段 2: ArrangeLayout 弹簧精调
+            // ArrangeLayout 弹簧精调
             // ==================================================================
             onStatus?.Invoke("正在优化布局（弹簧力+属性轨道+全局防重叠）...");
             allCoords = ArrangeLayoutService.Optimize(
-                erDoc, allCoords, _entityW, _entityH, _attrW, _relW, _relH);
+                erDoc, allCoords, _entityW, _entityH, _attrW, _relW, _relH, tier);
 
             // ==================================================================
-            // 阶段 3: ComponentSpread 断连分量展开
+            // ComponentSpread 断连分量展开
             // ==================================================================
             onStatus?.Invoke("正在展开断连分量...");
             allCoords = ComponentSpreadService.Spread(erDoc, allCoords);
+
+            // ==================================================================
+            // Arrange-light 二次精修（仅 T2/T3）
+            // ==================================================================
+            if (tier.UseArrangeLight)
+            {
+                onStatus?.Invoke("正在二次精修（全局分离）...");
+                allCoords = ArrangeLayoutService.OptimizeLight(
+                    erDoc, allCoords, _entityW, _entityH, _attrW, _relW, _relH);
+            }
 
             // ==================================================================
             // 阶段 4: 坐标归一化到 Visio 正值区间
@@ -667,9 +693,8 @@ namespace SqlToER.Service
                 pageSheet.get_CellsU("PlaceStyle").FormulaU = "0";
                 // 0 = 不重新放置，只路由
 
-                // 4c. 调用 Visio 内置布局引擎 — 只重排连线
-                // 大图(>12实体)跳过，避免 Visio 破坏算好的几何关系
-                if (erDoc.Entities.Count <= 12)
+                // 4c. 调用 Visio 内置布局引擎 — 只重排连线（仅 T1）
+                if (tier.UseVisioLayout)
                 {
                     try { _page.Layout(); } catch { }
                 }

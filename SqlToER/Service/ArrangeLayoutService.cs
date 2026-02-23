@@ -12,7 +12,8 @@ namespace SqlToER.Service
             Dictionary<string, (double X, double Y)> inputCoords,
             double entityW, double entityH,
             double attrW,
-            double relW, double relH)
+            double relW, double relH,
+            LayoutTier tier)
         {
             if (erDoc.Entities.Count == 0) return inputCoords;
 
@@ -66,10 +67,9 @@ namespace SqlToER.Service
                 systemRadius[e.Name] = ringR + maxSat; // JS L119
             }
 
-            // ---- ① 弹簧迭代 ----
-            // safeGap 按实体数缩放（20表→1.1", 50表→1.5" capped）
-            double safeGap = Math.Min(1.5, 0.7 + erDoc.Entities.Count * 0.02);
-            int springIter = Math.Min(900, 300 + erDoc.Entities.Count * 30);
+            // ---- ① 弹簧迭代（参数自 LayoutTier）----
+            double safeGap = tier.SafeGap;
+            int springIter = tier.SpringIter;
 
             for (int iter = 0; iter < springIter; iter++)
             {
@@ -118,7 +118,7 @@ namespace SqlToER.Service
                         {
                             double overlap = minDist - dist;
                             double nx = dx / dist, ny = dy / dist;
-                            double move = overlap * 0.35;
+                            double move = overlap * tier.RepulsionFactor;
 
                             entityPositions[eIds[i]] = (posA.X - nx * move, posA.Y - ny * move);
                             entityPositions[eIds[j]] = (posB.X + nx * move, posB.Y + ny * move);
@@ -387,6 +387,66 @@ namespace SqlToER.Service
             }
 
             for (int iter = 0; iter < 400; iter++)
+            {
+                double maxMove = 0;
+                for (int i = 0; i < allIds.Count; i++)
+                {
+                    for (int j = i + 1; j < allIds.Count; j++)
+                    {
+                        var pa = targets[allIds[i]]; var pb = targets[allIds[j]];
+                        double dx = pb.X - pa.X, dy = pb.Y - pa.Y;
+                        double dist = Math.Sqrt(dx * dx + dy * dy);
+                        if (dist < 0.001) dist = 0.001;
+                        double minDist = allRadii.GetValueOrDefault(allIds[i], 0.5)
+                                       + allRadii.GetValueOrDefault(allIds[j], 0.5) + 0.12;
+                        if (dist < minDist)
+                        {
+                            double push = (minDist - dist) / 2;
+                            double nx = dx / dist, ny = dy / dist;
+                            targets[allIds[i]] = (pa.X - nx * push, pa.Y - ny * push);
+                            targets[allIds[j]] = (pb.X + nx * push, pb.Y + ny * push);
+                            maxMove = Math.Max(maxMove, push);
+                        }
+                    }
+                }
+                if (maxMove < 0.005) break;
+            }
+
+            return targets;
+        }
+
+        /// <summary>
+        /// 二次精修（light 模式）—— 只跑间距保障 + 菱形防碰撞 + 全局分离
+        /// 不重算属性轨道，用于 Spread 之后的局部修正
+        /// </summary>
+        public static Dictionary<string, (double X, double Y)> OptimizeLight(
+            ErDocument erDoc,
+            Dictionary<string, (double X, double Y)> inputCoords,
+            double entityW, double entityH,
+            double attrW,
+            double relW, double relH)
+        {
+            if (erDoc.Entities.Count == 0) return inputCoords;
+
+            double entityR = LayoutUtils.NodeRadius(entityW, entityH);
+            double diamondR = LayoutUtils.NodeRadius(relW * 2, relH * 2);
+            double attrR = attrW / 2.0;
+
+            // 全局分离 200 轮
+            var targets = new Dictionary<string, (double X, double Y)>(inputCoords, StringComparer.OrdinalIgnoreCase);
+            var allIds = targets.Keys.ToList();
+            var allRadii = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            foreach (var id in allIds)
+            {
+                if (erDoc.Entities.Any(e => e.Name.Equals(id, StringComparison.OrdinalIgnoreCase)))
+                    allRadii[id] = entityR;
+                else if (id.StartsWith("◇"))
+                    allRadii[id] = diamondR;
+                else
+                    allRadii[id] = attrR;
+            }
+
+            for (int iter = 0; iter < 200; iter++)
             {
                 double maxMove = 0;
                 for (int i = 0; i < allIds.Count; i++)
