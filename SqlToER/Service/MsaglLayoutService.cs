@@ -131,12 +131,28 @@ namespace SqlToER.Service
             const double relSizePt = 90 * 0.75;      // 67.5pt
             const double attrSizePt = 90 * 0.75;     // 67.5pt
 
-            // --- 实体节点（不膨胀，统一尺寸）---
+            // --- 实体节点 ---
+            // 按实体属性数分组（用于膨胀尺寸）
+            var attrsByEntity = erDoc.Attributes
+                .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
             foreach (var entity in erDoc.Entities)
             {
                 var node = drawingGraph.AddNode(entity.Name);
                 node.Attr.Shape = MsaglDrawing.Shape.Box;
-                nodeSizes[entity.Name] = (entitySizePt, entitySizePt);
+
+                if (tier.SkipAttrsInMds)
+                {
+                    // T3: 膨胀实体尺寸，预留属性环绕空间
+                    int attrCount = attrsByEntity.GetValueOrDefault(entity.Name, 0);
+                    double inflated = entitySizePt + attrCount * 30;
+                    nodeSizes[entity.Name] = (inflated, inflated);
+                }
+                else
+                {
+                    nodeSizes[entity.Name] = (entitySizePt, entitySizePt);
+                }
             }
 
             // --- 菱形节点 + Entity↔Diamond 连边 ---
@@ -153,22 +169,25 @@ namespace SqlToER.Service
                 drawingGraph.AddEdge(dId, rel.Entity2);
             }
 
-            // --- 属性节点 + Entity↔Attr 连边 ---
-            var attrsByEntity = erDoc.Attributes
-                .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
-
-            foreach (var entity in erDoc.Entities)
+            // --- 属性节点 + Entity↔Attr 连边（T3 跳过，由 ArrangeLayout 环绕放置）---
+            if (!tier.SkipAttrsInMds)
             {
-                var attrs = attrsByEntity.GetValueOrDefault(entity.Name, []);
-                foreach (var attr in attrs)
-                {
-                    string attrId = $"{entity.Name}.{attr.Name}";
-                    var node = drawingGraph.AddNode(attrId);
-                    node.Attr.Shape = MsaglDrawing.Shape.Circle;
-                    nodeSizes[attrId] = (attrSizePt, attrSizePt);
+                var attrGroups = erDoc.Attributes
+                    .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 
-                    drawingGraph.AddEdge(entity.Name, attrId);
+                foreach (var entity in erDoc.Entities)
+                {
+                    var attrs = attrGroups.GetValueOrDefault(entity.Name, []);
+                    foreach (var attr in attrs)
+                    {
+                        string attrId = $"{entity.Name}.{attr.Name}";
+                        var node = drawingGraph.AddNode(attrId);
+                        node.Attr.Shape = MsaglDrawing.Shape.Circle;
+                        nodeSizes[attrId] = (attrSizePt, attrSizePt);
+
+                        drawingGraph.AddEdge(entity.Name, attrId);
+                    }
                 }
             }
 

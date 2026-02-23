@@ -15,7 +15,8 @@ namespace SqlToER.Service
 
         public void ExportToVsdx(ErDocument erDoc, string savePath,
             TemplateLayout? tpl = null,
-            Action<string>? onStatus = null)
+            Action<string>? onStatus = null,
+            LayoutTier? overrideTier = null)
         {
             Visio.InvisibleApp? app = null;
             Visio.Document? doc = null;
@@ -70,7 +71,7 @@ namespace SqlToER.Service
                 if (tpl != null)
                     painter.ApplyTemplateSizes(tpl);
 
-                painter.DrawErDiagram(erDoc, onStatus);
+                painter.DrawErDiagram(erDoc, onStatus, overrideTier);
 
                 CloseDoc(ref templateStencil);
                 CloseDoc(ref chenStencil);

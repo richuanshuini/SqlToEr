@@ -57,6 +57,11 @@ namespace SqlToER.ViewModel
         private ErDocument? _currentErDoc;
         private readonly LlmService _llmService = new();
 
+        // ===== 迭代优化 =====
+        [ObservableProperty] private int _optimizeRound;
+        [ObservableProperty] private string _optimizeRoundText = "";
+        private ErDocument? _lastExportedErDoc;
+
         public MainWindowViewModel()
         {
             LoadAvailableModels();
@@ -90,6 +95,9 @@ namespace SqlToER.ViewModel
 
                 LastExportPath = savePath;
                 CanOpenFile = true;
+                _lastExportedErDoc = erDoc;
+                OptimizeRound = 0;
+                OptimizeRoundText = "";
                 UpdateStatus($"✅ 测试模板导出成功：{savePath}");
             }
             catch (Exception ex) { UpdateStatus($"❌ 测试导出失败：{ex.Message}"); }
@@ -248,11 +256,52 @@ namespace SqlToER.ViewModel
 
                 LastExportPath = savePath;
                 CanOpenFile = true;
+                _lastExportedErDoc = erDoc;
+                OptimizeRound = 0;
+                OptimizeRoundText = "";
                 UpdateStatus($"✅ 导出成功：{savePath}");
             }
             catch (InvalidOperationException ex) { UpdateStatus($"❌ {ex.Message}"); }
             catch (COMException ex) { UpdateStatus($"❌ Visio 错误：{ex.Message}"); }
             catch (Exception ex) { UpdateStatus($"❌ 导出失败：{ex.Message}"); }
+            finally { IsLoading = false; }
+        }
+
+        [RelayCommand]
+        private async Task OptimizeLayoutAsync()
+        {
+            if (_lastExportedErDoc == null || string.IsNullOrEmpty(LastExportPath)) return;
+
+            // 弹出轮次设置对话框
+            var dialog = new View.OptimizeRoundDialog
+            {
+                Owner = Application.Current.MainWindow
+            };
+            if (dialog.ShowDialog() != true) return;
+
+            int totalRounds = dialog.Rounds;
+            IsLoading = true;
+            try
+            {
+                var erDoc = _lastExportedErDoc;
+                var tpl = _templateLayout;
+                var path = LastExportPath;
+
+                for (int i = 0; i < totalRounds; i++)
+                {
+                    OptimizeRound++;
+                    var round = OptimizeRound;
+                    UpdateStatus($"🔄 正在优化第 {round} 轮（共 {OptimizeRound - 1 + totalRounds - i} 轮）...");
+
+                    await RunOnStaThreadAsync(() =>
+                        LayoutOptimizer.OptimizeVsdx(path, erDoc, tpl, round, s => UpdateStatus(s)));
+
+                    OptimizeRoundText = $"已优化 {OptimizeRound} 轮";
+                }
+
+                UpdateStatus($"✅ {totalRounds} 轮优化全部完成（累计 {OptimizeRound} 轮）：{path}");
+            }
+            catch (Exception ex) { UpdateStatus($"❌ 优化失败（第 {OptimizeRound} 轮）：{ex.Message}"); }
             finally { IsLoading = false; }
         }
 

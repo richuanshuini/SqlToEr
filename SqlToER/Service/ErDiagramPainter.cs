@@ -538,7 +538,7 @@ namespace SqlToER.Service
         private record EntityPlacement(double X, double Y, double AttrAngle,
             double AttrGap = Math.PI, double DynRadius = AttrRadius);
 
-        public void DrawErDiagram(ErDocument erDoc, Action<string>? onStatus = null)
+        public void DrawErDiagram(ErDocument erDoc, Action<string>? onStatus = null, LayoutTier? overrideTier = null)
         {
             var attrsByEntity = erDoc.Attributes
                 .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
@@ -547,8 +547,9 @@ namespace SqlToER.Service
             // ==================================================================
             // 分层判定
             // ==================================================================
-            var tier = LayoutTier.Detect(erDoc);
-            onStatus?.Invoke($"布局档位: {tier.Level}（{erDoc.Entities.Count}实体/{erDoc.Attributes.Count}属性/{erDoc.Relationships.Count}关系）");
+            var tier = overrideTier ?? LayoutTier.Detect(erDoc);
+            onStatus?.Invoke($"布局档位: {tier.Level}（{erDoc.Entities.Count}实体/{erDoc.Attributes.Count}属性/{erDoc.Relationships.Count}关系）" +
+                (overrideTier != null ? $" [优化: NodeSep={tier.NodeSeparation}, SafeGap={tier.SafeGap:F1}]" : ""));
 
             Dictionary<string, (double X, double Y)> allCoords;
 

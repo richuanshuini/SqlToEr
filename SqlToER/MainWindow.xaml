@@ -263,6 +263,20 @@
                         </StackPanel>
                     </Border>
 
+                    <!-- 布局优化区域（导出成功后显示） -->
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0"
+                                Visibility="{Binding CanOpenFile, Converter={StaticResource BoolToVis}}">
+                        <Button Content="🔄 优化布局"
+                                Background="#F59E0B"
+                                Style="{StaticResource AccentButtonStyle}"
+                                Padding="16,10"
+                                FontSize="14"
+                                Command="{Binding OptimizeLayoutCommand}" />
+                        <TextBlock Text="{Binding OptimizeRoundText}"
+                                   VerticalAlignment="Center" Margin="12,0,0,0"
+                                   FontSize="12.5" Foreground="#718096" />
+                    </StackPanel>
+
                     <!-- 打开文件按钮（导出成功后显示） -->
                     <Button Content="📂 打开导出的文件"
                             Background="#3B82F6"

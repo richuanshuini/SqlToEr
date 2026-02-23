@@ -31,6 +31,7 @@ namespace SqlToER.Service
         public bool UseForceAlign { get; init; }
         public bool UseArrangeLight { get; init; }
         public bool UseVisioLayout { get; init; }
+        public bool SkipAttrsInMds { get; init; }   // T3: MDS 只放实体+菱形，属性由 Arrange 环绕
 
         /// <summary>
         /// 按复杂度指标自动判定档位
@@ -49,22 +50,23 @@ namespace SqlToER.Service
             if (attrCounts.Any())
                 maxAttr = attrCounts.Max();
 
-            // T3: N > 170 或 maxAttr > 20
-            if (N > 170 || maxAttr > 20)
+            // T3: 实体数 >= 25（30表级别，MDS 只放实体+菱形）
+            if (E >= 25)
             {
                 return new LayoutTier
                 {
                     Level = TierLevel.T3,
-                    SafeGap = 1.2,             // 加大实体簇间距
-                    SpringIter = 500,           // 更多迭代收敛
+                    SafeGap = 1.2,
+                    SpringIter = 500,
                     RepulsionFactor = 0.25,
-                    NodeSeparation = 140,       // 大间距给关系线留通道
-                    MdsIterations = 600,        // 334+节点需更多迭代
-                    CollisionPadding = 0.6,     // 菱形-实体碰撞裕量加大
-                    GlobalSepPadding = 0.25,    // 全局分离间距加大
-                    UseForceAlign = true,       // MSAGL全节点作为初始布局
+                    NodeSeparation = 100,       // 实体+菱形(75节点)不需要太大
+                    MdsIterations = 300,        // 75节点足够
+                    CollisionPadding = 0.6,
+                    GlobalSepPadding = 0.25,
+                    UseForceAlign = true,
                     UseArrangeLight = false,
                     UseVisioLayout = false,
+                    SkipAttrsInMds = true,      // 关键：MDS 只放实体+菱形
                 };
             }
 
@@ -84,6 +86,7 @@ namespace SqlToER.Service
                     UseForceAlign = true,
                     UseArrangeLight = false,
                     UseVisioLayout = false,
+                    SkipAttrsInMds = false,
                 };
             }
 
@@ -101,6 +104,7 @@ namespace SqlToER.Service
                 UseForceAlign = false,
                 UseArrangeLight = false,
                 UseVisioLayout = true,
+                SkipAttrsInMds = false,
             };
         }
     }
