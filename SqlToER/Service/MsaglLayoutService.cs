@@ -196,9 +196,9 @@ namespace SqlToER.Service
             {
                 ScaleX = 1.0,
                 ScaleY = 1.0,
-                IterationsWithMajorization = 300,
+                IterationsWithMajorization = 500,  // 200+节点需更多迭代收敛
             };
-            settings.NodeSeparation = 20;  // 参考项目 nodeSpacing=20
+            settings.NodeSeparation = 80;  // 增大间距，给关系线留出绕过属性区的通道
 
             var geometryGraph = drawingGraph.GeometryGraph;
             LayoutHelpers.CalculateLayout(geometryGraph, settings, null);
