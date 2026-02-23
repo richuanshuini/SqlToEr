@@ -28,10 +28,11 @@ namespace SqlToER.Service
         public double GlobalSepPadding { get; init; }   // 全局分离最小间距 (英寸)
 
         // ---- 流程控制 ----
+        public bool UseGraphviz { get; init; }      // T3: 用 Graphviz sfdp 引擎
         public bool UseForceAlign { get; init; }
         public bool UseArrangeLight { get; init; }
         public bool UseVisioLayout { get; init; }
-        public bool SkipAttrsInMds { get; init; }   // T3: MDS 只放实体+菱形，属性由 Arrange 环绕
+        public bool SkipAttrsInMds { get; init; }
 
         /// <summary>
         /// 按复杂度指标自动判定档位
@@ -59,14 +60,15 @@ namespace SqlToER.Service
                     SafeGap = 1.2,
                     SpringIter = 500,
                     RepulsionFactor = 0.25,
-                    NodeSeparation = 100,       // 实体+菱形(75节点)不需要太大
-                    MdsIterations = 300,        // 75节点足够
+                    NodeSeparation = 100,
+                    MdsIterations = 300,
                     CollisionPadding = 0.6,
                     GlobalSepPadding = 0.25,
-                    UseForceAlign = true,
+                    UseGraphviz = true,         // T3: Graphviz sfdp 引擎
+                    UseForceAlign = false,       // Graphviz 替代 MSAGL
                     UseArrangeLight = false,
                     UseVisioLayout = false,
-                    SkipAttrsInMds = true,      // 关键：MDS 只放实体+菱形
+                    SkipAttrsInMds = false,
                 };
             }
 
@@ -83,6 +85,7 @@ namespace SqlToER.Service
                     MdsIterations = 500,
                     CollisionPadding = 0.3,
                     GlobalSepPadding = 0.12,
+                    UseGraphviz = false,
                     UseForceAlign = true,
                     UseArrangeLight = false,
                     UseVisioLayout = false,
@@ -101,6 +104,7 @@ namespace SqlToER.Service
                 MdsIterations = 500,
                 CollisionPadding = 0.3,
                 GlobalSepPadding = 0.12,
+                UseGraphviz = false,
                 UseForceAlign = false,
                 UseArrangeLight = false,
                 UseVisioLayout = true,

@@ -67,95 +67,98 @@ namespace SqlToER.Service
                 systemRadius[e.Name] = ringR + maxSat; // JS L119
             }
 
-            // ---- ① 弹簧迭代（参数自 LayoutTier）----
-            double safeGap = tier.SafeGap;
-            int springIter = tier.SpringIter;
-
-            for (int iter = 0; iter < springIter; iter++)
+            // ---- ①② 弹簧迭代 + 间距保障（T3 跳过：信任 Graphviz 骨架坐标）----
+            if (!tier.UseGraphviz)
             {
-                double maxMove = 0;
+                double safeGap = tier.SafeGap;
+                int springIter = tier.SpringIter;
 
-                foreach (var (dId, e1, e2) in relConnections)
+                for (int iter = 0; iter < springIter; iter++)
                 {
-                    if (!entityPositions.TryGetValue(e1, out var posA)) continue;
-                    if (!entityPositions.TryGetValue(e2, out var posB)) continue;
+                    double maxMove = 0;
 
-                    double dx = posB.X - posA.X, dy = posB.Y - posA.Y;
-                    double dist = Math.Sqrt(dx * dx + dy * dy);
-                    if (dist < 0.01) dist = 0.01;
-
-                    double rA = systemRadius.GetValueOrDefault(e1, 1.5);
-                    double rB = systemRadius.GetValueOrDefault(e2, 1.5);
-                    double desired = rA + rB + safeGap;
-
-                    double diff = desired - dist;
-                    if (Math.Abs(diff) < 0.02) continue;
-
-                    double nx = dx / dist, ny = dy / dist;
-                    double move = (diff * 0.2) / 2;
-
-                    entityPositions[e1] = (posA.X - nx * move, posA.Y - ny * move);
-                    entityPositions[e2] = (posB.X + nx * move, posB.Y + ny * move);
-                    maxMove = Math.Max(maxMove, Math.Abs(move));
-                }
-
-                var eIds = entityPositions.Keys.ToList();
-                for (int i = 0; i < eIds.Count; i++)
-                {
-                    for (int j = i + 1; j < eIds.Count; j++)
+                    foreach (var (dId, e1, e2) in relConnections)
                     {
-                        var posA = entityPositions[eIds[i]];
-                        var posB = entityPositions[eIds[j]];
+                        if (!entityPositions.TryGetValue(e1, out var posA)) continue;
+                        if (!entityPositions.TryGetValue(e2, out var posB)) continue;
+
                         double dx = posB.X - posA.X, dy = posB.Y - posA.Y;
                         double dist = Math.Sqrt(dx * dx + dy * dy);
                         if (dist < 0.01) dist = 0.01;
 
-                        double rA = systemRadius.GetValueOrDefault(eIds[i], 1.5);
-                        double rB = systemRadius.GetValueOrDefault(eIds[j], 1.5);
-                        double minDist = rA + rB + safeGap;
+                        double rA = systemRadius.GetValueOrDefault(e1, 1.5);
+                        double rB = systemRadius.GetValueOrDefault(e2, 1.5);
+                        double desired = rA + rB + safeGap;
 
-                        if (dist < minDist)
+                        double diff = desired - dist;
+                        if (Math.Abs(diff) < 0.02) continue;
+
+                        double nx = dx / dist, ny = dy / dist;
+                        double move = (diff * 0.2) / 2;
+
+                        entityPositions[e1] = (posA.X - nx * move, posA.Y - ny * move);
+                        entityPositions[e2] = (posB.X + nx * move, posB.Y + ny * move);
+                        maxMove = Math.Max(maxMove, Math.Abs(move));
+                    }
+
+                    var eIds = entityPositions.Keys.ToList();
+                    for (int i = 0; i < eIds.Count; i++)
+                    {
+                        for (int j = i + 1; j < eIds.Count; j++)
                         {
-                            double overlap = minDist - dist;
-                            double nx = dx / dist, ny = dy / dist;
-                            double move = overlap * tier.RepulsionFactor;
+                            var posA = entityPositions[eIds[i]];
+                            var posB = entityPositions[eIds[j]];
+                            double dx = posB.X - posA.X, dy = posB.Y - posA.Y;
+                            double dist = Math.Sqrt(dx * dx + dy * dy);
+                            if (dist < 0.01) dist = 0.01;
 
-                            entityPositions[eIds[i]] = (posA.X - nx * move, posA.Y - ny * move);
-                            entityPositions[eIds[j]] = (posB.X + nx * move, posB.Y + ny * move);
-                            maxMove = Math.Max(maxMove, move);
+                            double rA = systemRadius.GetValueOrDefault(eIds[i], 1.5);
+                            double rB = systemRadius.GetValueOrDefault(eIds[j], 1.5);
+                            double minDist = rA + rB + safeGap;
+
+                            if (dist < minDist)
+                            {
+                                double overlap = minDist - dist;
+                                double nx = dx / dist, ny = dy / dist;
+                                double move = overlap * tier.RepulsionFactor;
+
+                                entityPositions[eIds[i]] = (posA.X - nx * move, posA.Y - ny * move);
+                                entityPositions[eIds[j]] = (posB.X + nx * move, posB.Y + ny * move);
+                                maxMove = Math.Max(maxMove, move);
+                            }
                         }
                     }
+
+                    if (maxMove < 0.005) break;
                 }
 
-                if (maxMove < 0.005) break;
-            }
-
-            // ---- ② 间距保障 ×3 ----
-            for (int pass = 0; pass < 3; pass++)
-            {
-                foreach (var (dId, e1, e2) in relConnections)
+                // ---- ② 间距保障 ×3 ----
+                for (int pass = 0; pass < 3; pass++)
                 {
-                    if (!entityPositions.TryGetValue(e1, out var posA)) continue;
-                    if (!entityPositions.TryGetValue(e2, out var posB)) continue;
+                    foreach (var (dId, e1, e2) in relConnections)
+                    {
+                        if (!entityPositions.TryGetValue(e1, out var posA)) continue;
+                        if (!entityPositions.TryGetValue(e2, out var posB)) continue;
 
-                    double dx = posB.X - posA.X, dy = posB.Y - posA.Y;
-                    double dist = Math.Sqrt(dx * dx + dy * dy);
-                    if (dist < 0.01) dist = 0.01;
+                        double dx = posB.X - posA.X, dy = posB.Y - posA.Y;
+                        double dist = Math.Sqrt(dx * dx + dy * dy);
+                        if (dist < 0.01) dist = 0.01;
 
-                    double minHalf = Math.Max(
-                        baseRing.GetValueOrDefault(e1, 1.0) + diamondR + 0.2,
-                        baseRing.GetValueOrDefault(e2, 1.0) + diamondR + 0.2);
-                    double required = minHalf * 2;
-                    if (dist >= required) continue;
+                        double minHalf = Math.Max(
+                            baseRing.GetValueOrDefault(e1, 1.0) + diamondR + 0.2,
+                            baseRing.GetValueOrDefault(e2, 1.0) + diamondR + 0.2);
+                        double required = minHalf * 2;
+                        if (dist >= required) continue;
 
-                    double missing = required - dist;
-                    double nx = dx / dist, ny = dy / dist;
-                    entityPositions[e1] = (posA.X - nx * missing / 2, posA.Y - ny * missing / 2);
-                    entityPositions[e2] = (posB.X + nx * missing / 2, posB.Y + ny * missing / 2);
+                        double missing = required - dist;
+                        double nx = dx / dist, ny = dy / dist;
+                        entityPositions[e1] = (posA.X - nx * missing / 2, posA.Y - ny * missing / 2);
+                        entityPositions[e2] = (posB.X + nx * missing / 2, posB.Y + ny * missing / 2);
+                    }
                 }
-            }
+            } // endif !tier.UseGraphviz
 
-            // ---- ③ 卫星轨道分配（只分配属性）----
+            // ---- ③ 卫星轨道分配（所有档位都执行）----
             var targets = new Dictionary<string, (double X, double Y)>(StringComparer.OrdinalIgnoreCase);
             foreach (var kv in entityPositions)
                 targets[kv.Key] = kv.Value;
@@ -175,13 +178,21 @@ namespace SqlToER.Service
                 {
                     if (!e1.Equals(e.Name, StringComparison.OrdinalIgnoreCase) &&
                         !e2.Equals(e.Name, StringComparison.OrdinalIgnoreCase)) continue;
-                    string other = e1.Equals(e.Name, StringComparison.OrdinalIgnoreCase) ? e2 : e1;
-                    if (entityPositions.TryGetValue(other, out var oPos))
-                        avoidAngles.Add(LayoutUtils.NormalizeAngle(
-                            Math.Atan2(oPos.Y - center.Y, oPos.X - center.X)));
+                    // 优先用菱形坐标（T3 Graphviz 已精确定位），回退到对端实体
+                    (double X, double Y) targetPos;
+                    if (inputCoords.TryGetValue(dId2, out var dPos))
+                        targetPos = dPos;
+                    else
+                    {
+                        string other = e1.Equals(e.Name, StringComparison.OrdinalIgnoreCase) ? e2 : e1;
+                        if (!entityPositions.TryGetValue(other, out var oPos)) continue;
+                        targetPos = oPos;
+                    }
+                    avoidAngles.Add(LayoutUtils.NormalizeAngle(
+                        Math.Atan2(targetPos.Y - center.Y, targetPos.X - center.X)));
                 }
 
-                double halfGap = 0.175;
+                double halfGap = 0.35; // 扩大属性连线禁飞区
                 var segments = new List<(double Start, double End)>();
 
                 if (avoidAngles.Count == 0)
@@ -250,7 +261,7 @@ namespace SqlToER.Service
                 }
             }
 
-            // ---- ④ 菱形中点定位 ----
+            // ---- ④ 菱形定位（T3: 保留 Graphviz 坐标，非 T3: 中点定位）----
             var relAnchors = new Dictionary<string, (double X, double Y)>(StringComparer.OrdinalIgnoreCase);
             var relRadii = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
 
@@ -258,9 +269,19 @@ namespace SqlToER.Service
             {
                 if (!entityPositions.TryGetValue(e1, out var pA)) continue;
                 if (!entityPositions.TryGetValue(e2, out var pB)) continue;
-                var mid = ((pA.X + pB.X) / 2, (pA.Y + pB.Y) / 2);
-                targets[dId] = mid;
-                relAnchors[dId] = mid;
+
+                if (tier.UseGraphviz && inputCoords.TryGetValue(dId, out var gvPos))
+                {
+                    // T3: 无条件信任 Graphviz 的菱形坐标
+                    targets[dId] = gvPos;
+                    relAnchors[dId] = gvPos;
+                }
+                else
+                {
+                    var mid = ((pA.X + pB.X) / 2, (pA.Y + pB.Y) / 2);
+                    targets[dId] = mid;
+                    relAnchors[dId] = mid;
+                }
                 relRadii[dId] = diamondR;
             }
 

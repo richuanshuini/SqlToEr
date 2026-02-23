@@ -553,9 +553,16 @@ namespace SqlToER.Service
 
             Dictionary<string, (double X, double Y)> allCoords;
 
-            if (tier.UseForceAlign)
+            if (tier.UseGraphviz)
             {
-                // T2/T3: MSAGL 全节点布局（entity+rel+attr 全参与 MDS，最小化边交叉）
+                // T3: Graphviz sfdp 引擎（骨架=实体+菱形，属性由 ArrangeLayout 处理）
+                onStatus?.Invoke($"启用 Graphviz sfdp 引擎计算骨架布局（{erDoc.Entities.Count}表）...");
+                allCoords = GraphvizLayoutService.CalculateLayout(
+                    erDoc, _entityW, _entityH, _attrW, _relW, _relH, onStatus);
+            }
+            else if (tier.UseForceAlign)
+            {
+                // T2: MSAGL 全节点布局（entity+rel+attr 全参与 MDS，最小化边交叉）
                 onStatus?.Invoke($"正在计算全节点布局（MSAGL MDS，{erDoc.Entities.Count}实体+{erDoc.Attributes.Count}属性）...");
                 allCoords = MsaglLayoutService.CalculateLayoutAllNodes(
                     erDoc, _entityW, _entityH, _attrW, _relW, _relH, tier);
@@ -586,7 +593,7 @@ namespace SqlToER.Service
             }
 
             // ==================================================================
-            // ArrangeLayout 弹簧精调
+            // ArrangeLayout 弹簧精调（所有档位统一走）
             // ==================================================================
             onStatus?.Invoke("正在优化布局（弹簧力+属性轨道+全局防重叠）...");
             allCoords = ArrangeLayoutService.Optimize(
@@ -598,9 +605,7 @@ namespace SqlToER.Service
             onStatus?.Invoke("正在展开断连分量...");
             allCoords = ComponentSpreadService.Spread(erDoc, allCoords);
 
-            // ==================================================================
             // Arrange-light 二次精修（仅 T2/T3）
-            // ==================================================================
             if (tier.UseArrangeLight)
             {
                 onStatus?.Invoke("正在二次精修（全局分离）...");
@@ -687,14 +692,28 @@ namespace SqlToER.Service
 
                 // 4b. 配置页面级路由参数
                 var pageSheet = _page.PageSheet;
-                pageSheet.get_CellsU("RouteStyle").FormulaU = "16";
-                // 16 = visLORouteCenterToCenter
-                pageSheet.get_CellsU("LineRouteExt").FormulaU = "1";
-                // 1 = 直线
-                pageSheet.get_CellsU("PlaceStyle").FormulaU = "0";
-                // 0 = 不重新放置，只路由
 
-                // 4c. 调用 Visio 内置布局引擎 — 只重排连线（仅 T1）
+                if (tier.UseGraphviz)
+                {
+                    // T3: 直角避障路由（连线自动绕开 2D 障碍物）
+                    pageSheet.get_CellsU("RouteStyle").FormulaU = "1";
+                    // 1 = visLORouteRightAngle (直角绕行)
+                    pageSheet.get_CellsU("LineRouteExt").FormulaU = "2";
+                    // 2 = 自动路由（避障）
+                    pageSheet.get_CellsU("PlaceStyle").FormulaU = "0";
+                    // 让 Visio 重排连线（绕开障碍物）
+                    try { _page.Layout(); } catch { }
+                }
+                else
+                {
+                    pageSheet.get_CellsU("RouteStyle").FormulaU = "16";
+                    // 16 = visLORouteCenterToCenter
+                    pageSheet.get_CellsU("LineRouteExt").FormulaU = "1";
+                    // 1 = 直线
+                    pageSheet.get_CellsU("PlaceStyle").FormulaU = "0";
+                }
+
+                // T1: 调用 Visio 内置布局引擎重排连线
                 if (tier.UseVisioLayout)
                 {
                     try { _page.Layout(); } catch { }

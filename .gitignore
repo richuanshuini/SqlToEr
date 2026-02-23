@@ -48,3 +48,6 @@ $RECYCLE.BIN/
 # Output files
 *.vsdx
 temp
+
+# Graphviz binaries (too large for git, bundled separately)
+SqlToER/Graphviz/

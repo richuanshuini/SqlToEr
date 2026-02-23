@@ -24,6 +24,7 @@ namespace SqlToER.Service
                 MdsIterations = (int)(baseTier.MdsIterations * scale),
                 CollisionPadding = baseTier.CollisionPadding * scale,
                 GlobalSepPadding = baseTier.GlobalSepPadding * scale,
+                UseGraphviz = baseTier.UseGraphviz,
                 UseForceAlign = baseTier.UseForceAlign,
                 UseArrangeLight = baseTier.UseArrangeLight,
                 UseVisioLayout = baseTier.UseVisioLayout,

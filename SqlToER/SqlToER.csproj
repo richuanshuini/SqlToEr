@@ -26,4 +26,8 @@
     <Folder Include="Helper\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Graphviz\**" CopyToOutputDirectory="PreserveNewest" Link="Graphviz\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
 </Project>
