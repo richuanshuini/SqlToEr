@@ -545,16 +545,33 @@ namespace SqlToER.Service
                 .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 
             // ==================================================================
-            // 阶段 1: ForceAlign 骨架布局（BFS主链+分支+菱形+属性+防重叠）
+            // 阶段 1: MSAGL 初始布局
             // ==================================================================
-            onStatus?.Invoke($"正在计算骨架布局（{erDoc.Entities.Count}个实体）...");
-            var allCoords = ForceAlignLayoutService.Layout(
+            onStatus?.Invoke($"正在计算初始布局（MSAGL，{erDoc.Entities.Count}个实体）...");
+            var msaglCoords = MsaglLayoutService.CalculateLayout(
                 erDoc, _entityW, _entityH, _attrW, _relW, _relH);
 
+            var allCoords = new Dictionary<string, (double X, double Y)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in msaglCoords)
+                allCoords[kv.Key] = (kv.Value.X, kv.Value.Y);
+
+            // 补充菱形坐标（如果缺少，用实体中点）
+            for (int i = 0; i < erDoc.Relationships.Count; i++)
+            {
+                var rel = erDoc.Relationships[i];
+                string dId = $"◇{rel.Name}_{i}";
+                if (!allCoords.ContainsKey(dId))
+                {
+                    if (allCoords.TryGetValue(rel.Entity1, out var e1) &&
+                        allCoords.TryGetValue(rel.Entity2, out var e2))
+                        allCoords[dId] = ((e1.X + e2.X) / 2, (e1.Y + e2.Y) / 2);
+                }
+            }
+
             // ==================================================================
-            // 阶段 2: ArrangeLayout 弹簧优化（参考项目："先对齐后智能布局"）
+            // 阶段 2: ArrangeLayout 弹簧精调
             // ==================================================================
-            onStatus?.Invoke("正在优化布局（弹簧力+全局防重叠）...");
+            onStatus?.Invoke("正在优化布局（弹簧力+属性轨道+全局防重叠）...");
             allCoords = ArrangeLayoutService.Optimize(
                 erDoc, allCoords, _entityW, _entityH, _attrW, _relW, _relH);
 
