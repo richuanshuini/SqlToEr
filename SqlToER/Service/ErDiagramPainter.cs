@@ -591,16 +591,30 @@ namespace SqlToER.Service
                 entityShapes[entity.Name] = shape;
             }
 
-            // ---- 步骤3: 画关系菱形+连线 ----
+            // ---- 步骤3: 画关系菱形+连线（用 MSAGL 精算的菱形坐标）----
             onStatus?.Invoke("正在绘制关系...");
-            var diamondPositions = CalculateDiamondPositions(erDoc, layout);
             for (int i = 0; i < erDoc.Relationships.Count; i++)
             {
                 var rel = erDoc.Relationships[i];
                 if (entityShapes.TryGetValue(rel.Entity1, out var s1) &&
                     entityShapes.TryGetValue(rel.Entity2, out var s2))
                 {
-                    var (dx, dy) = diamondPositions[i];
+                    // 优先用 MSAGL 计算的菱形坐标（经归一化）
+                    string dId = $"◇{rel.Name}_{i}";
+                    double dx, dy;
+                    if (msaglCoords.TryGetValue(dId, out var dCoord))
+                    {
+                        dx = dCoord.X + offX;
+                        dy = dCoord.Y + offY;
+                    }
+                    else
+                    {
+                        // 兜底：两实体中点
+                        var p1 = layout[rel.Entity1];
+                        var p2 = layout[rel.Entity2];
+                        dx = (p1.X + p2.X) / 2;
+                        dy = (p1.Y + p2.Y) / 2;
+                    }
                     DrawRelBetween(rel.Name, rel.Cardinality, s1, s2, dx, dy);
                 }
             }
