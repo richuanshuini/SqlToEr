@@ -117,7 +117,8 @@ namespace SqlToER.Service
             ErDocument erDoc,
             double entityW, double entityH,
             double attrW,
-            double relW, double relH)
+            double relW, double relH,
+            LayoutTier tier)
         {
             var result = new Dictionary<string, (double X, double Y)>(StringComparer.OrdinalIgnoreCase);
             if (erDoc.Entities.Count == 0) return result;
@@ -196,9 +197,9 @@ namespace SqlToER.Service
             {
                 ScaleX = 1.0,
                 ScaleY = 1.0,
-                IterationsWithMajorization = 500,  // 200+节点需更多迭代收敛
+                IterationsWithMajorization = tier.MdsIterations,
             };
-            settings.NodeSeparation = 80;  // 增大间距，给关系线留出绕过属性区的通道
+            settings.NodeSeparation = tier.NodeSeparation;
 
             var geometryGraph = drawingGraph.GeometryGraph;
             LayoutHelpers.CalculateLayout(geometryGraph, settings, null);

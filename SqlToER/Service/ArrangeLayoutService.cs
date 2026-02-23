@@ -306,7 +306,7 @@ namespace SqlToER.Service
             foreach (var e in erDoc.Entities)
             {
                 double ring = entityOrbitRadius.GetValueOrDefault(e.Name, baseRing.GetValueOrDefault(e.Name, 0.8));
-                entityCollisionRadius[e.Name] = ring + 0.3;
+                entityCollisionRadius[e.Name] = ring + tier.CollisionPadding;
             }
 
             var relPositions = relAnchors.ToDictionary(
@@ -398,7 +398,7 @@ namespace SqlToER.Service
                         double dist = Math.Sqrt(dx * dx + dy * dy);
                         if (dist < 0.001) dist = 0.001;
                         double minDist = allRadii.GetValueOrDefault(allIds[i], 0.5)
-                                       + allRadii.GetValueOrDefault(allIds[j], 0.5) + 0.12;
+                                       + allRadii.GetValueOrDefault(allIds[j], 0.5) + tier.GlobalSepPadding;
                         if (dist < minDist)
                         {
                             double push = (minDist - dist) / 2;

@@ -15,7 +15,8 @@ namespace SqlToER.Model
             "05.完整示例(3表)",
             "06.5表(1:1+1:N+M:N)",
             "07.10表压力测试",
-            "08.20表极限压测"
+            "08.20表极限压测",
+            "09.30表极限压测"
         ];
 
         /// <summary>
@@ -31,6 +32,7 @@ namespace SqlToER.Model
             6 => FiveTablesAllRelations(),
             7 => TenTableStress(),
             8 => TwentyTableStress(),
+            9 => ThirtyTableStress(),
             _ => null
         };
 
@@ -545,6 +547,400 @@ namespace SqlToER.Model
                 new("Supplies", "Supplier", "Product", "M:N"),
                 new("CoveredBy", "Project", "Contract", "1:N"),
                 new("UsesProduct", "Project", "Product", "M:N")
+            ]
+        };
+        // ===== 09. 30表极限压力测试 — 属性 2~30，关系复杂度 1~10/实体 =====
+        private static ErDocument ThirtyTableStress() => new()
+        {
+            Entities =
+            [
+                new("Organization"),  // 30属性
+                new("Division"),      // 8属性
+                new("Department"),    // 12属性
+                new("Team"),          // 5属性
+                new("Employee"),      // 25属性
+                new("Manager"),       // 7属性
+                new("Intern"),        // 3属性
+                new("Contractor"),    // 6属性
+                new("Project"),       // 18属性
+                new("Task"),          // 10属性
+                new("Milestone"),     // 5属性
+                new("Deliverable"),   // 4属性
+                new("Client"),        // 15属性
+                new("Contract"),      // 9属性
+                new("Invoice"),       // 7属性
+                new("Payment"),       // 6属性
+                new("Product"),       // 20属性
+                new("Warehouse"),     // 5属性
+                new("Supplier"),      // 10属性
+                new("Shipment"),      // 8属性
+                new("Skill"),         // 3属性
+                new("Certificate"),   // 5属性
+                new("Training"),      // 4属性
+                new("Vehicle"),       // 9属性
+                new("Office"),        // 6属性
+                new("Meeting"),       // 2属性
+                new("Document"),      // 7属性
+                new("Budget"),        // 11属性
+                new("Risk"),          // 4属性
+                new("Audit")          // 3属性
+            ],
+            Attributes =
+            [
+                // Organization (30属性)
+                new("Organization", "org_id", true),
+                new("Organization", "org_name", false),
+                new("Organization", "industry", false),
+                new("Organization", "founded", false),
+                new("Organization", "ceo", false),
+                new("Organization", "revenue", false),
+                new("Organization", "profit", false),
+                new("Organization", "market_cap", false),
+                new("Organization", "ticker", false),
+                new("Organization", "country", false),
+                new("Organization", "city", false),
+                new("Organization", "address", false),
+                new("Organization", "zip_code", false),
+                new("Organization", "phone", false),
+                new("Organization", "fax", false),
+                new("Organization", "website", false),
+                new("Organization", "email", false),
+                new("Organization", "tax_id", false),
+                new("Organization", "reg_number", false),
+                new("Organization", "legal_form", false),
+                new("Organization", "employees_cnt", false),
+                new("Organization", "sector", false),
+                new("Organization", "rating", false),
+                new("Organization", "stock_exchange", false),
+                new("Organization", "fiscal_year", false),
+                new("Organization", "currency", false),
+                new("Organization", "language", false),
+                new("Organization", "timezone", false),
+                new("Organization", "logo_url", false),
+                new("Organization", "description", false),
+                // Division (8属性)
+                new("Division", "div_id", true),
+                new("Division", "div_name", false),
+                new("Division", "head_count", false),
+                new("Division", "budget", false),
+                new("Division", "location", false),
+                new("Division", "created_date", false),
+                new("Division", "status", false),
+                new("Division", "floor", false),
+                // Department (12属性)
+                new("Department", "dept_id", true),
+                new("Department", "dept_name", false),
+                new("Department", "dept_code", false),
+                new("Department", "head_count", false),
+                new("Department", "budget", false),
+                new("Department", "cost_center", false),
+                new("Department", "location", false),
+                new("Department", "phone_ext", false),
+                new("Department", "email_alias", false),
+                new("Department", "floor", false),
+                new("Department", "active", false),
+                new("Department", "created_date", false),
+                // Team (5属性)
+                new("Team", "team_id", true),
+                new("Team", "team_name", false),
+                new("Team", "size", false),
+                new("Team", "focus_area", false),
+                new("Team", "sprint_cycle", false),
+                // Employee (25属性)
+                new("Employee", "emp_id", true),
+                new("Employee", "first_name", false),
+                new("Employee", "last_name", false),
+                new("Employee", "email", false),
+                new("Employee", "phone", false),
+                new("Employee", "hire_date", false),
+                new("Employee", "salary", false),
+                new("Employee", "bonus", false),
+                new("Employee", "job_title", false),
+                new("Employee", "grade", false),
+                new("Employee", "ssn", false),
+                new("Employee", "dob", false),
+                new("Employee", "gender", false),
+                new("Employee", "address", false),
+                new("Employee", "city", false),
+                new("Employee", "state", false),
+                new("Employee", "zip", false),
+                new("Employee", "country", false),
+                new("Employee", "emergency_contact", false),
+                new("Employee", "blood_type", false),
+                new("Employee", "photo_url", false),
+                new("Employee", "badge_id", false),
+                new("Employee", "parking_spot", false),
+                new("Employee", "shift", false),
+                new("Employee", "active", false),
+                // Manager (7属性)
+                new("Manager", "mgr_id", true),
+                new("Manager", "mgr_level", false),
+                new("Manager", "reports_count", false),
+                new("Manager", "bonus_pct", false),
+                new("Manager", "authority", false),
+                new("Manager", "office_num", false),
+                new("Manager", "assistant", false),
+                // Intern (3属性)
+                new("Intern", "intern_id", true),
+                new("Intern", "school", false),
+                new("Intern", "end_date", false),
+                // Contractor (6属性)
+                new("Contractor", "ctr_id", true),
+                new("Contractor", "company", false),
+                new("Contractor", "hourly_rate", false),
+                new("Contractor", "contract_end", false),
+                new("Contractor", "clearance", false),
+                new("Contractor", "agency", false),
+                // Project (18属性)
+                new("Project", "proj_id", true),
+                new("Project", "proj_name", false),
+                new("Project", "start_date", false),
+                new("Project", "end_date", false),
+                new("Project", "budget", false),
+                new("Project", "status", false),
+                new("Project", "priority", false),
+                new("Project", "category", false),
+                new("Project", "description", false),
+                new("Project", "methodology", false),
+                new("Project", "risk_level", false),
+                new("Project", "completion_pct", false),
+                new("Project", "sponsor", false),
+                new("Project", "roi", false),
+                new("Project", "phase", false),
+                new("Project", "gate_status", false),
+                new("Project", "code_repo", false),
+                new("Project", "wiki_url", false),
+                // Task (10属性)
+                new("Task", "task_id", true),
+                new("Task", "task_name", false),
+                new("Task", "assignee", false),
+                new("Task", "due_date", false),
+                new("Task", "status", false),
+                new("Task", "priority", false),
+                new("Task", "story_points", false),
+                new("Task", "sprint", false),
+                new("Task", "label", false),
+                new("Task", "created_at", false),
+                // Milestone (5属性)
+                new("Milestone", "ms_id", true),
+                new("Milestone", "ms_name", false),
+                new("Milestone", "target_date", false),
+                new("Milestone", "achieved", false),
+                new("Milestone", "deliverable", false),
+                // Deliverable (4属性)
+                new("Deliverable", "dlv_id", true),
+                new("Deliverable", "dlv_name", false),
+                new("Deliverable", "format", false),
+                new("Deliverable", "sign_off", false),
+                // Client (15属性)
+                new("Client", "client_id", true),
+                new("Client", "client_name", false),
+                new("Client", "industry", false),
+                new("Client", "contact_person", false),
+                new("Client", "email", false),
+                new("Client", "phone", false),
+                new("Client", "address", false),
+                new("Client", "city", false),
+                new("Client", "country", false),
+                new("Client", "tier", false),
+                new("Client", "account_mgr", false),
+                new("Client", "since_date", false),
+                new("Client", "credit_limit", false),
+                new("Client", "payment_terms", false),
+                new("Client", "nda_signed", false),
+                // Contract (9属性)
+                new("Contract", "contract_id", true),
+                new("Contract", "contract_type", false),
+                new("Contract", "value", false),
+                new("Contract", "start_date", false),
+                new("Contract", "end_date", false),
+                new("Contract", "status", false),
+                new("Contract", "penalty_clause", false),
+                new("Contract", "auto_renew", false),
+                new("Contract", "signed_by", false),
+                // Invoice (7属性)
+                new("Invoice", "inv_id", true),
+                new("Invoice", "inv_date", false),
+                new("Invoice", "amount", false),
+                new("Invoice", "tax", false),
+                new("Invoice", "due_date", false),
+                new("Invoice", "status", false),
+                new("Invoice", "currency", false),
+                // Payment (6属性)
+                new("Payment", "pay_id", true),
+                new("Payment", "pay_date", false),
+                new("Payment", "amount", false),
+                new("Payment", "method", false),
+                new("Payment", "reference", false),
+                new("Payment", "confirmed", false),
+                // Product (20属性)
+                new("Product", "prod_id", true),
+                new("Product", "prod_name", false),
+                new("Product", "sku", false),
+                new("Product", "category", false),
+                new("Product", "price", false),
+                new("Product", "cost", false),
+                new("Product", "weight", false),
+                new("Product", "dimensions", false),
+                new("Product", "color", false),
+                new("Product", "material", false),
+                new("Product", "brand", false),
+                new("Product", "model", false),
+                new("Product", "warranty", false),
+                new("Product", "origin", false),
+                new("Product", "hs_code", false),
+                new("Product", "stock_qty", false),
+                new("Product", "reorder_level", false),
+                new("Product", "lead_time", false),
+                new("Product", "discontinued", false),
+                new("Product", "image_url", false),
+                // Warehouse (5属性)
+                new("Warehouse", "wh_id", true),
+                new("Warehouse", "wh_name", false),
+                new("Warehouse", "location", false),
+                new("Warehouse", "capacity", false),
+                new("Warehouse", "manager", false),
+                // Supplier (10属性)
+                new("Supplier", "supp_id", true),
+                new("Supplier", "supp_name", false),
+                new("Supplier", "country", false),
+                new("Supplier", "contact", false),
+                new("Supplier", "email", false),
+                new("Supplier", "phone", false),
+                new("Supplier", "rating", false),
+                new("Supplier", "lead_time", false),
+                new("Supplier", "min_order", false),
+                new("Supplier", "payment_terms", false),
+                // Shipment (8属性)
+                new("Shipment", "ship_id", true),
+                new("Shipment", "ship_date", false),
+                new("Shipment", "carrier", false),
+                new("Shipment", "tracking", false),
+                new("Shipment", "weight", false),
+                new("Shipment", "cost", false),
+                new("Shipment", "eta", false),
+                new("Shipment", "status", false),
+                // Skill (3属性)
+                new("Skill", "skill_id", true),
+                new("Skill", "skill_name", false),
+                new("Skill", "category", false),
+                // Certificate (5属性)
+                new("Certificate", "cert_id", true),
+                new("Certificate", "cert_name", false),
+                new("Certificate", "issuer", false),
+                new("Certificate", "valid_until", false),
+                new("Certificate", "level", false),
+                // Training (4属性)
+                new("Training", "train_id", true),
+                new("Training", "course_name", false),
+                new("Training", "duration_hrs", false),
+                new("Training", "provider", false),
+                // Vehicle (9属性)
+                new("Vehicle", "vehicle_id", true),
+                new("Vehicle", "plate", false),
+                new("Vehicle", "make", false),
+                new("Vehicle", "model", false),
+                new("Vehicle", "year", false),
+                new("Vehicle", "mileage", false),
+                new("Vehicle", "fuel_type", false),
+                new("Vehicle", "insurance_exp", false),
+                new("Vehicle", "assigned_to", false),
+                // Office (6属性)
+                new("Office", "office_id", true),
+                new("Office", "office_name", false),
+                new("Office", "city", false),
+                new("Office", "floor_count", false),
+                new("Office", "capacity", false),
+                new("Office", "rent_cost", false),
+                // Meeting (2属性)
+                new("Meeting", "mtg_id", true),
+                new("Meeting", "mtg_title", false),
+                // Document (7属性)
+                new("Document", "doc_id", true),
+                new("Document", "doc_title", false),
+                new("Document", "version", false),
+                new("Document", "author", false),
+                new("Document", "created_at", false),
+                new("Document", "file_type", false),
+                new("Document", "file_size", false),
+                // Budget (11属性)
+                new("Budget", "budget_id", true),
+                new("Budget", "fiscal_year", false),
+                new("Budget", "quarter", false),
+                new("Budget", "amount", false),
+                new("Budget", "spent", false),
+                new("Budget", "remaining", false),
+                new("Budget", "category", false),
+                new("Budget", "approved_by", false),
+                new("Budget", "status", false),
+                new("Budget", "variance", false),
+                new("Budget", "notes", false),
+                // Risk (4属性)
+                new("Risk", "risk_id", true),
+                new("Risk", "description", false),
+                new("Risk", "severity", false),
+                new("Risk", "mitigation", false),
+                // Audit (3属性)
+                new("Audit", "audit_id", true),
+                new("Audit", "audit_date", false),
+                new("Audit", "findings", false)
+            ],
+            Relationships =
+            [
+                // 层级结构 (1:N)
+                new("HasDivision", "Organization", "Division", "1:N"),
+                new("HasDept", "Division", "Department", "1:N"),
+                new("HasTeam", "Department", "Team", "1:N"),
+                new("BelongsTo", "Employee", "Team", "M:N"),
+                new("ManagedBy", "Team", "Manager", "1:1"),
+                // 人员关系
+                new("Manages", "Manager", "Employee", "1:N"),
+                new("SupervisedBy", "Intern", "Employee", "1:N"),
+                new("ContractedBy", "Contractor", "Department", "M:N"),
+                new("HasSkill", "Employee", "Skill", "M:N"),
+                new("EarnedCert", "Employee", "Certificate", "M:N"),
+                new("AttendsTrain", "Employee", "Training", "M:N"),
+                // 项目关系
+                new("AssignedTo", "Employee", "Project", "M:N"),
+                new("WorksOn", "Employee", "Task", "M:N"),
+                new("HasTask", "Project", "Task", "1:N"),
+                new("HasMilestone", "Project", "Milestone", "1:N"),
+                new("HasDeliverable", "Milestone", "Deliverable", "1:N"),
+                new("RequiresSkill", "Project", "Skill", "M:N"),
+                // 客户-合同-财务
+                new("Sponsors", "Client", "Project", "M:N"),
+                new("SignsContract", "Client", "Contract", "1:N"),
+                new("CoveredBy", "Project", "Contract", "1:N"),
+                new("HasInvoice", "Contract", "Invoice", "1:N"),
+                new("PaidBy", "Invoice", "Payment", "1:N"),
+                // 供应链
+                new("Supplies", "Supplier", "Product", "M:N"),
+                new("StoredIn", "Product", "Warehouse", "M:N"),
+                new("ShipsFrom", "Warehouse", "Shipment", "1:N"),
+                new("Contains", "Shipment", "Product", "M:N"),
+                new("UsesProduct", "Project", "Product", "M:N"),
+                // 办公-车辆
+                new("LocatedIn", "Department", "Office", "1:N"),
+                new("AssignedVehicle", "Employee", "Vehicle", "1:1"),
+                new("FleetAt", "Office", "Vehicle", "1:N"),
+                // 会议-文档
+                new("AttendsM", "Employee", "Meeting", "M:N"),
+                new("Discusses", "Meeting", "Project", "M:N"),
+                new("HasDoc", "Project", "Document", "1:N"),
+                new("AuthoredBy", "Document", "Employee", "1:N"),
+                // 预算-风险-审计
+                new("AllocBudget", "Department", "Budget", "1:N"),
+                new("ProjBudget", "Project", "Budget", "1:N"),
+                new("HasRisk", "Project", "Risk", "1:N"),
+                new("MitigatedBy", "Risk", "Employee", "M:N"),
+                new("AuditsDept", "Audit", "Department", "1:N"),
+                new("AuditsProj", "Audit", "Project", "1:N"),
+                // 额外跨域关系
+                new("SupplierAudit", "Audit", "Supplier", "1:N"),
+                new("TrainingCert", "Training", "Certificate", "M:N"),
+                new("OfficeAt", "Organization", "Office", "1:N"),
+                new("OrgClient", "Organization", "Client", "M:N"),
+                new("InternProject", "Intern", "Project", "M:N")
             ]
         };
     }
