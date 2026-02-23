@@ -544,54 +544,67 @@ namespace SqlToER.Service
                 .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 
-            // ---- 步骤1: MSAGL 计算布局（内置阈值：≤10 MDS / >10 Sugiyama）----
-            onStatus?.Invoke($"正在计算布局（MSAGL，{erDoc.Entities.Count}个实体）...");
-            var msaglCoords = MsaglLayoutService.CalculateLayout(
+            // ==================================================================
+            // 阶段 1: ForceAlign 骨架布局（BFS主链+分支+菱形+属性+防重叠）
+            // ==================================================================
+            onStatus?.Invoke($"正在计算骨架布局（{erDoc.Entities.Count}个实体）...");
+            var allCoords = ForceAlignLayoutService.Layout(
                 erDoc, _entityW, _entityH, _attrW, _relW, _relH);
 
-            // MSAGL 坐标归一化到正值区间
-            var attrCounts2 = erDoc.Attributes
-                .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+            // ==================================================================
+            // 阶段 2: ArrangeLayout 弹簧优化（参考项目："先对齐后智能布局"）
+            // ==================================================================
+            onStatus?.Invoke("正在优化布局（弹簧力+全局防重叠）...");
+            allCoords = ArrangeLayoutService.Optimize(
+                erDoc, allCoords, _entityW, _entityH, _attrW, _relW, _relH);
 
+            // ==================================================================
+            // 阶段 3: ComponentSpread 断连分量展开
+            // ==================================================================
+            onStatus?.Invoke("正在展开断连分量...");
+            allCoords = ComponentSpreadService.Spread(erDoc, allCoords);
+
+            // ==================================================================
+            // 阶段 4: 坐标归一化到 Visio 正值区间
+            // ==================================================================
             double minX = double.MaxValue, minY = double.MaxValue;
-            foreach (var entity in erDoc.Entities)
+            foreach (var kv in allCoords)
             {
-                if (msaglCoords.TryGetValue(entity.Name, out var c))
-                {
-                    int nA = attrCounts2.GetValueOrDefault(entity.Name, 0);
-                    double r = Math.Max(AttrRadius, nA * _attrW * 1.3 / Math.PI);
-                    minX = Math.Min(minX, c.X - r);
-                    minY = Math.Min(minY, c.Y - r);
-                }
+                minX = Math.Min(minX, kv.Value.X);
+                minY = Math.Min(minY, kv.Value.Y);
             }
             double offX = EntityStartX + 1 - minX;
             double offY = EntityY + 1 - minY;
 
-            var layout = new Dictionary<string, EntityPlacement>(StringComparer.OrdinalIgnoreCase);
-            foreach (var entity in erDoc.Entities)
-            {
-                if (msaglCoords.TryGetValue(entity.Name, out var coord))
-                    layout[entity.Name] = new EntityPlacement(coord.X + offX, coord.Y + offY, Math.PI / 2);
-            }
+            // 应用偏移
+            var normalizedCoords = allCoords.ToDictionary(
+                kv => kv.Key,
+                kv => (kv.Value.X + offX, kv.Value.Y + offY),
+                StringComparer.OrdinalIgnoreCase);
 
-            // ---- 步骤1.5: 角度分区 — 属性放到关系线的空隙中 ----
-            onStatus?.Invoke("正在计算属性避让方向...");
-            layout = OptimizeAttrAngles(erDoc, layout);
+            // ==================================================================
+            // 绘图：实体 + 属性 + 菱形连线
+            // ==================================================================
 
-            // ---- 步骤2: 画实体+属性 ----
+            // ---- 画实体 + 逐个属性 ----
             onStatus?.Invoke("正在绘制实体...");
             var entityShapes = new Dictionary<string, Visio.Shape>(StringComparer.OrdinalIgnoreCase);
             foreach (var entity in erDoc.Entities)
             {
-                if (!layout.TryGetValue(entity.Name, out var place)) continue;
-                var attrs = attrsByEntity.GetValueOrDefault(entity.Name, []);
-                var shape = DrawEntityWithAttrs(entity.Name, attrs,
-                    place.X, place.Y, place.AttrAngle, place.AttrGap, place.DynRadius);
+                if (!normalizedCoords.TryGetValue(entity.Name, out var pos)) continue;
+                var shape = DrawEntity(entity.Name, pos.Item1, pos.Item2);
                 entityShapes[entity.Name] = shape;
+
+                var attrs = attrsByEntity.GetValueOrDefault(entity.Name, []);
+                foreach (var attr in attrs)
+                {
+                    string key = $"{entity.Name}.{attr.Name}";
+                    if (normalizedCoords.TryGetValue(key, out var ap))
+                        DrawAttribute(attr.Name, ap.Item1, ap.Item2, shape, attr.IsPrimaryKey);
+                }
             }
 
-            // ---- 步骤3: 画关系菱形+连线（用 MSAGL 精算的菱形坐标）----
+            // ---- 画关系菱形+连线 ----
             onStatus?.Invoke("正在绘制关系...");
             for (int i = 0; i < erDoc.Relationships.Count; i++)
             {
@@ -599,23 +612,9 @@ namespace SqlToER.Service
                 if (entityShapes.TryGetValue(rel.Entity1, out var s1) &&
                     entityShapes.TryGetValue(rel.Entity2, out var s2))
                 {
-                    // 优先用 MSAGL 计算的菱形坐标（经归一化）
                     string dId = $"◇{rel.Name}_{i}";
-                    double dx, dy;
-                    if (msaglCoords.TryGetValue(dId, out var dCoord))
-                    {
-                        dx = dCoord.X + offX;
-                        dy = dCoord.Y + offY;
-                    }
-                    else
-                    {
-                        // 兜底：两实体中点
-                        var p1 = layout[rel.Entity1];
-                        var p2 = layout[rel.Entity2];
-                        dx = (p1.X + p2.X) / 2;
-                        dy = (p1.Y + p2.Y) / 2;
-                    }
-                    DrawRelBetween(rel.Name, rel.Cardinality, s1, s2, dx, dy);
+                    if (normalizedCoords.TryGetValue(dId, out var dc))
+                        DrawRelBetween(rel.Name, rel.Cardinality, s1, s2, dc.Item1, dc.Item2);
                 }
             }
 

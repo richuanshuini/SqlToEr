@@ -1,0 +1,421 @@
+using SqlToER.Model;
+
+namespace SqlToER.Service
+{
+    /// <summary>
+    /// 弹簧力优化布局 — 移植自 sql_to_ER/js/layout/arrangeLayout.js
+    ///
+    /// 流水线：
+    /// ① 弹簧引力+斥力 (300轮) → ② 间距保障 (×3) →
+    /// ③ 菱形中点 → ④ 多菱形偏移 → ⑤ 菱形防碰撞 (80轮) →
+    /// ⑥ 全局分离 (400轮)
+    /// </summary>
+    public static class ArrangeLayoutService
+    {
+        /// <summary>
+        /// 优化已有坐标：弹簧力+间距保障+属性轨道+全局防重叠
+        /// </summary>
+        public static Dictionary<string, (double X, double Y)> Optimize(
+            ErDocument erDoc,
+            Dictionary<string, (double X, double Y)> inputCoords,
+            double entityW, double entityH,
+            double attrW,
+            double relW, double relH)
+        {
+            if (erDoc.Entities.Count == 0) return inputCoords;
+
+            double entityR = LayoutUtils.NodeRadius(entityW, entityH);
+            double diamondR = LayoutUtils.NodeRadius(relW * 2, relH * 2);
+            double attrR = attrW / 2.0;
+
+            // ---- 建立拓扑 ----
+            var entityPositions = new Dictionary<string, (double X, double Y)>(
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var e in erDoc.Entities)
+                if (inputCoords.TryGetValue(e.Name, out var p))
+                    entityPositions[e.Name] = p;
+
+            // 菱形→实体对
+            var relConnections = new List<(string DId, string E1, string E2)>();
+            for (int i = 0; i < erDoc.Relationships.Count; i++)
+            {
+                var rel = erDoc.Relationships[i];
+                string dId = $"◇{rel.Name}_{i}";
+                relConnections.Add((dId, rel.Entity1, rel.Entity2));
+            }
+
+            // ---- 轨道半径计算 ----
+            var attrsByEntity = erDoc.Attributes
+                .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+            var baseRing = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            var systemRadius = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var e in erDoc.Entities)
+            {
+                int nAttrs = attrsByEntity.GetValueOrDefault(e.Name, []).Count;
+                // 关系数量
+                int nRels = relConnections.Count(r => 
+                    r.E1.Equals(e.Name, StringComparison.OrdinalIgnoreCase) || 
+                    r.E2.Equals(e.Name, StringComparison.OrdinalIgnoreCase));
+                int totalSatellites = nAttrs + nRels;
+
+                double ringR = entityR + Math.Max(attrR, diamondR) + 0.4;
+                if (totalSatellites > 1)
+                {
+                    double requiredArc = Math.Max(attrR, diamondR) * 2 + 0.25;
+                    double totalCirc = totalSatellites * requiredArc;
+                    double requiredR = totalCirc / (2 * Math.PI);
+                    ringR = Math.Max(ringR, requiredR);
+                }
+
+                baseRing[e.Name] = ringR;
+                systemRadius[e.Name] = ringR + Math.Max(attrR, diamondR);
+            }
+
+            // ---- ① 弹簧 300 轮 ----
+            double safeGap = 0.7;
+
+            for (int iter = 0; iter < 300; iter++)
+            {
+                double maxMove = 0;
+
+                // 引力：有关系的实体
+                foreach (var (dId, e1, e2) in relConnections)
+                {
+                    if (!entityPositions.TryGetValue(e1, out var posA)) continue;
+                    if (!entityPositions.TryGetValue(e2, out var posB)) continue;
+
+                    double dx = posB.X - posA.X, dy = posB.Y - posA.Y;
+                    double dist = Math.Sqrt(dx * dx + dy * dy);
+                    if (dist < 0.01) dist = 0.01;
+
+                    double rA = systemRadius.GetValueOrDefault(e1, 1.5);
+                    double rB = systemRadius.GetValueOrDefault(e2, 1.5);
+                    double desired = rA + rB + safeGap;
+
+                    double diff = desired - dist;
+                    if (Math.Abs(diff) < 0.02) continue;
+
+                    double nx = dx / dist, ny = dy / dist;
+                    double move = (diff * 0.2) / 2;
+
+                    entityPositions[e1] = (posA.X - nx * move, posA.Y - ny * move);
+                    entityPositions[e2] = (posB.X + nx * move, posB.Y + ny * move);
+                    maxMove = Math.Max(maxMove, Math.Abs(move));
+                }
+
+                // 斥力：全对
+                var eIds = entityPositions.Keys.ToList();
+                for (int i = 0; i < eIds.Count; i++)
+                {
+                    for (int j = i + 1; j < eIds.Count; j++)
+                    {
+                        var posA = entityPositions[eIds[i]];
+                        var posB = entityPositions[eIds[j]];
+                        double dx = posB.X - posA.X, dy = posB.Y - posA.Y;
+                        double dist = Math.Sqrt(dx * dx + dy * dy);
+                        if (dist < 0.01) dist = 0.01;
+
+                        double rA = systemRadius.GetValueOrDefault(eIds[i], 1.5);
+                        double rB = systemRadius.GetValueOrDefault(eIds[j], 1.5);
+                        double minDist = rA + rB + safeGap;
+
+                        if (dist < minDist)
+                        {
+                            double overlap = minDist - dist;
+                            double nx = dx / dist, ny = dy / dist;
+                            double move = overlap * 0.25;
+
+                            entityPositions[eIds[i]] = (posA.X - nx * move, posA.Y - ny * move);
+                            entityPositions[eIds[j]] = (posB.X + nx * move, posB.Y + ny * move);
+                            maxMove = Math.Max(maxMove, move);
+                        }
+                    }
+                }
+
+                if (maxMove < 0.01) break;
+            }
+
+            // ---- ② 间距保障 ×3 ----
+            for (int pass = 0; pass < 3; pass++)
+            {
+                foreach (var (dId, e1, e2) in relConnections)
+                {
+                    if (!entityPositions.TryGetValue(e1, out var posA)) continue;
+                    if (!entityPositions.TryGetValue(e2, out var posB)) continue;
+
+                    double dx = posB.X - posA.X, dy = posB.Y - posA.Y;
+                    double dist = Math.Sqrt(dx * dx + dy * dy);
+                    if (dist < 0.01) dist = 0.01;
+
+                    double minHalf = Math.Max(
+                        baseRing.GetValueOrDefault(e1, 1.0) + diamondR + 0.2,
+                        baseRing.GetValueOrDefault(e2, 1.0) + diamondR + 0.2);
+                    double required = minHalf * 2;
+                    if (dist >= required) continue;
+
+                    double missing = required - dist;
+                    double nx = dx / dist, ny = dy / dist;
+                    entityPositions[e1] = (posA.X - nx * missing / 2, posA.Y - ny * missing / 2);
+                    entityPositions[e2] = (posB.X + nx * missing / 2, posB.Y + ny * missing / 2);
+                }
+            }
+
+            // ---- ③ 菱形中点 ----
+            var targets = new Dictionary<string, (double X, double Y)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in entityPositions)
+                targets[kv.Key] = kv.Value;
+
+            var relAnchors = new Dictionary<string, (double X, double Y)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (dId, e1, e2) in relConnections)
+            {
+                if (!entityPositions.TryGetValue(e1, out var pA)) continue;
+                if (!entityPositions.TryGetValue(e2, out var pB)) continue;
+                var mid = ((pA.X + pB.X) / 2, (pA.Y + pB.Y) / 2);
+                targets[dId] = mid;
+                relAnchors[dId] = mid;
+            }
+
+            // ---- ④ 多菱形偏移 ----
+            var grouped = relConnections
+                .GroupBy(r =>
+                {
+                    string a = r.E1, b = r.E2;
+                    return string.Compare(a, b, StringComparison.OrdinalIgnoreCase) < 0
+                        ? $"{a}__{b}" : $"{b}__{a}";
+                })
+                .Where(g => g.Count() > 1);
+
+            foreach (var group in grouped)
+            {
+                var list = group.ToList();
+                var first = list[0];
+                if (!entityPositions.TryGetValue(first.E1, out var posA)) continue;
+                if (!entityPositions.TryGetValue(first.E2, out var posB)) continue;
+
+                double dx = posB.X - posA.X, dy = posB.Y - posA.Y;
+                double dist = Math.Sqrt(dx * dx + dy * dy);
+                if (dist < 0.01) dist = 0.01;
+                double px = -dy / dist, py = dx / dist;
+
+                var basePos = targets.GetValueOrDefault(first.DId, ((posA.X + posB.X) / 2, (posA.Y + posB.Y) / 2));
+                double offsetStep = diamondR * 2 + 0.25;
+
+                var sorted = list.OrderBy(r => r.DId, StringComparer.OrdinalIgnoreCase).ToList();
+                double mid = (sorted.Count - 1) / 2.0;
+                for (int idx = 0; idx < sorted.Count; idx++)
+                {
+                    double offsetIndex = idx - mid;
+                    var newPos = (basePos.Item1 + px * offsetIndex * offsetStep,
+                                  basePos.Item2 + py * offsetIndex * offsetStep);
+                    targets[sorted[idx].DId] = newPos;
+                    relAnchors[sorted[idx].DId] = newPos;
+                }
+            }
+
+            // ---- ⑤ 菱形防碰撞 80 轮 ----
+            var relPositions = relAnchors.ToDictionary(
+                kv => kv.Key, kv => targets.GetValueOrDefault(kv.Key, kv.Value),
+                StringComparer.OrdinalIgnoreCase);
+            var relIds = relPositions.Keys.ToList();
+
+            for (int iter = 0; iter < 80; iter++)
+            {
+                // 菱形间碰撞
+                for (int i = 0; i < relIds.Count; i++)
+                {
+                    for (int j = i + 1; j < relIds.Count; j++)
+                    {
+                        var posA2 = relPositions[relIds[i]];
+                        var posB2 = relPositions[relIds[j]];
+                        double dx2 = posB2.X - posA2.X, dy2 = posB2.Y - posA2.Y;
+                        double d2 = Math.Sqrt(dx2 * dx2 + dy2 * dy2);
+                        if (d2 < 0.001) d2 = 0.001;
+                        double minD = diamondR * 2 + 0.2;
+                        if (d2 < minD)
+                        {
+                            double push = (minD - d2) / 2;
+                            double nx = dx2 / d2, ny = dy2 / d2;
+                            relPositions[relIds[i]] = (posA2.X - nx * push, posA2.Y - ny * push);
+                            relPositions[relIds[j]] = (posB2.X + nx * push, posB2.Y + ny * push);
+                        }
+                    }
+                }
+
+                // 菱形不侵入实体轨道
+                foreach (var rid in relIds)
+                {
+                    var pos = relPositions[rid];
+                    var conn = relConnections.FirstOrDefault(r => r.DId == rid);
+                    foreach (var eName in new[] { conn.E1, conn.E2 })
+                    {
+                        if (string.IsNullOrEmpty(eName)) continue;
+                        if (!entityPositions.TryGetValue(eName, out var center)) continue;
+                        double limit = baseRing.GetValueOrDefault(eName, 1.0) + 0.3;
+                        double dx3 = pos.X - center.X, dy3 = pos.Y - center.Y;
+                        double d3 = Math.Sqrt(dx3 * dx3 + dy3 * dy3);
+                        if (d3 < 0.01) d3 = 0.01;
+                        if (d3 < limit)
+                        {
+                            double push = limit - d3;
+                            pos = (pos.X + (dx3 / d3) * push, pos.Y + (dy3 / d3) * push);
+                        }
+                    }
+                    relPositions[rid] = pos;
+                }
+
+                // 锚点回弹
+                foreach (var rid in relIds)
+                {
+                    if (!relAnchors.TryGetValue(rid, out var anchor)) continue;
+                    var pos = relPositions[rid];
+                    relPositions[rid] = (pos.X * 0.85 + anchor.X * 0.15, pos.Y * 0.85 + anchor.Y * 0.15);
+                }
+            }
+
+            foreach (var kv in relPositions)
+                targets[kv.Key] = kv.Value;
+
+            // ---- 属性轨道 ----
+            foreach (var e in erDoc.Entities)
+            {
+                if (!entityPositions.TryGetValue(e.Name, out var center)) continue;
+                var attrs = attrsByEntity.GetValueOrDefault(e.Name, []);
+                if (attrs.Count == 0) continue;
+
+                double ringR = baseRing.GetValueOrDefault(e.Name, 1.0);
+
+                // 避让角度
+                var avoidAngles = new List<double>();
+                foreach (var (dId, e1, e2) in relConnections)
+                {
+                    if (!e1.Equals(e.Name, StringComparison.OrdinalIgnoreCase) &&
+                        !e2.Equals(e.Name, StringComparison.OrdinalIgnoreCase)) continue;
+                    string other = e1.Equals(e.Name, StringComparison.OrdinalIgnoreCase) ? e2 : e1;
+                    if (entityPositions.TryGetValue(other, out var oPos))
+                        avoidAngles.Add(LayoutUtils.NormalizeAngle(
+                            Math.Atan2(oPos.Y - center.Y, oPos.X - center.X)));
+                }
+
+                // 多扇区分配
+                double halfGap = 0.175;
+                var segments = new List<(double Start, double End, int Count)>();
+
+                if (avoidAngles.Count == 0)
+                {
+                    segments.Add((0, Math.PI * 2, 0));
+                }
+                else
+                {
+                    var sorted = avoidAngles.OrderBy(a => a).ToList();
+                    for (int i = 0; i < sorted.Count; i++)
+                    {
+                        double curr = sorted[i];
+                        double next = i == sorted.Count - 1
+                            ? sorted[0] + Math.PI * 2 : sorted[i + 1];
+                        double s = curr + halfGap, en = next - halfGap;
+                        if (en > s) segments.Add((s, en, 0));
+                    }
+                }
+
+                double totalFree = segments.Sum(s => s.End - s.Start);
+                if (totalFree <= 0) segments = [(0, Math.PI * 2, 0)];
+                totalFree = segments.Sum(s => s.End - s.Start);
+
+                int totalCount = attrs.Count;
+                var segList = segments.Select(s =>
+                    (s.Start, s.End, Count: Math.Max(0,
+                        (int)Math.Round(totalCount * (s.End - s.Start) / totalFree)))
+                ).ToList();
+
+                int allocated = segList.Sum(s => s.Count);
+                while (allocated < totalCount)
+                {
+                    int maxIdx = 0; double maxLen = -1;
+                    for (int i = 0; i < segList.Count; i++)
+                    {
+                        double len = segList[i].End - segList[i].Start;
+                        if (len > maxLen) { maxLen = len; maxIdx = i; }
+                    }
+                    var old = segList[maxIdx];
+                    segList[maxIdx] = (old.Start, old.End, old.Count + 1);
+                    allocated++;
+                }
+                while (allocated > totalCount)
+                {
+                    for (int i = segList.Count - 1; i >= 0; i--)
+                    {
+                        if (segList[i].Count > 0)
+                        {
+                            var old = segList[i];
+                            segList[i] = (old.Start, old.End, old.Count - 1);
+                            allocated--;
+                            break;
+                        }
+                    }
+                }
+
+                var sortedAttrs = attrs.OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase).ToList();
+                int nodeIdx = 0;
+                foreach (var seg in segList)
+                {
+                    if (seg.Count == 0) continue;
+                    double step = (seg.End - seg.Start) / seg.Count;
+                    for (int i = 0; i < seg.Count && nodeIdx < sortedAttrs.Count; i++)
+                    {
+                        double angle = LayoutUtils.NormalizeAngle(seg.Start + step * (i + 0.5));
+                        string key = $"{e.Name}.{sortedAttrs[nodeIdx].Name}";
+                        targets[key] = (
+                            center.X + Math.Cos(angle) * ringR,
+                            center.Y + Math.Sin(angle) * ringR
+                        );
+                        nodeIdx++;
+                    }
+                }
+            }
+
+            // ---- ⑥ 全局分离 400 轮 ----
+            var allIds = targets.Keys.ToList();
+            var allRadii = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            foreach (var id in allIds)
+            {
+                if (erDoc.Entities.Any(e => e.Name.Equals(id, StringComparison.OrdinalIgnoreCase)))
+                    allRadii[id] = entityR;
+                else if (id.StartsWith("◇"))
+                    allRadii[id] = diamondR;
+                else
+                    allRadii[id] = attrR;
+            }
+
+            for (int iter = 0; iter < 400; iter++)
+            {
+                double maxMove = 0;
+                for (int i = 0; i < allIds.Count; i++)
+                {
+                    for (int j = i + 1; j < allIds.Count; j++)
+                    {
+                        var pa = targets[allIds[i]]; var pb = targets[allIds[j]];
+                        double dx = pb.X - pa.X, dy = pb.Y - pa.Y;
+                        double dist = Math.Sqrt(dx * dx + dy * dy);
+                        if (dist < 0.001) dist = 0.001;
+                        double minDist = allRadii.GetValueOrDefault(allIds[i], 0.5)
+                                       + allRadii.GetValueOrDefault(allIds[j], 0.5) + 0.12;
+                        if (dist < minDist)
+                        {
+                            double push = (minDist - dist) / 2;
+                            double nx = dx / dist, ny = dy / dist;
+                            targets[allIds[i]] = (pa.X - nx * push, pa.Y - ny * push);
+                            targets[allIds[j]] = (pb.X + nx * push, pb.Y + ny * push);
+                            maxMove = Math.Max(maxMove, push);
+                        }
+                    }
+                }
+                if (maxMove < 0.005) break;
+            }
+
+            return targets;
+        }
+    }
+}
