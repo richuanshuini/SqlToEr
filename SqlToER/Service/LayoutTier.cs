@@ -7,8 +7,8 @@ namespace SqlToER.Service
     /// <summary>
     /// 布局分层判定 + 各档参数
     /// T1(轻量): MSAGL → Arrange → Spread → Visio路由
-    /// T2(中等): ForceAlign → Arrange → Spread
-    /// T3(重度): ForceAlign → Arrange(强) → Spread → Arrange-light
+    /// T2(中等): MSAGL全节点 → Arrange → Spread
+    /// T3(重度): MSAGL全节点 → Arrange → Spread
     /// </summary>
     public class LayoutTier
     {
@@ -47,11 +47,11 @@ namespace SqlToER.Service
                 return new LayoutTier
                 {
                     Level = TierLevel.T3,
-                    SafeGap = 1.3,
-                    SpringIter = 900,
-                    RepulsionFactor = 0.35,
-                    UseForceAlign = true,
-                    UseArrangeLight = true,
+                    SafeGap = 0.7,       // JS: safeGap=50px ≈ 0.7"
+                    SpringIter = 300,     // JS: 300轮
+                    RepulsionFactor = 0.25,  // JS: overlap*0.5*0.5 = 0.25
+                    UseForceAlign = true,  // MSAGL全节点作为初始布局
+                    UseArrangeLight = false,  // 关闭：无约束推开会破坏 ForceAlign 拓扑
                     UseVisioLayout = false,
                 };
             }
@@ -62,11 +62,11 @@ namespace SqlToER.Service
                 return new LayoutTier
                 {
                     Level = TierLevel.T2,
-                    SafeGap = 1.0,
-                    SpringIter = 600,
-                    RepulsionFactor = 0.30,
-                    UseForceAlign = true,
-                    UseArrangeLight = true,
+                    SafeGap = 0.7,       // 同 JS
+                    SpringIter = 300,
+                    RepulsionFactor = 0.25,
+                    UseForceAlign = true,  // MSAGL全节点作为初始布局
+                    UseArrangeLight = false,  // 关闭：同上
                     UseVisioLayout = false,
                 };
             }

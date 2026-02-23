@@ -13,7 +13,8 @@ namespace SqlToER.Service
             ErDocument erDoc,
             double entityW, double entityH,
             double attrW,
-            double relW, double relH)
+            double relW, double relH,
+            Dictionary<string, (double X, double Y)>? inputCoords = null)
         {
             var result = new Dictionary<string, (double X, double Y)>(StringComparer.OrdinalIgnoreCase);
             if (erDoc.Entities.Count == 0) return result;
@@ -82,29 +83,82 @@ namespace SqlToER.Service
 
             // ---- 对每个分量布局（JS L138-447）----
             var sideHint = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            // 用 MSAGL 全节点坐标预填 sideHint：
+            // 每个分量中节点相对于分量中心的 Y 方向决定上下侧
+            if (inputCoords != null)
+            {
+                foreach (var compIds in components)
+                {
+                    // 算分量中心 Y
+                    double sumY = 0;
+                    int cnt = 0;
+                    foreach (var id in compIds)
+                    {
+                        if (inputCoords.TryGetValue(id, out var pos))
+                        { sumY += pos.Y; cnt++; }
+                    }
+                    double centerY = cnt > 0 ? sumY / cnt : 0;
+
+                    foreach (var id in compIds)
+                    {
+                        if (inputCoords.TryGetValue(id, out var pos))
+                        {
+                            int sign = pos.Y > centerY + 0.01 ? 1 : (pos.Y < centerY - 0.01 ? -1 : 0);
+                            if (sign != 0) sideHint[id] = sign;
+                        }
+                    }
+                }
+            }
+
             var globalTargets = new Dictionary<string, (double X, double Y)>(StringComparer.OrdinalIgnoreCase);
             var mainChainIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            double cursorX = 3.0, cursorY = 3.0, rowHeight = 0;
-            double componentGap = 3.5;
 
-            foreach (var compIds in components)
+            if (inputCoords != null)
             {
-                var (targets, bounds, mainPathSet) = LayoutComponent(
-                    compIds, coreAdj, nodeTypes, nodeRadii, sideHint, entityR, diamondR);
+                // ---- 有 MSAGL 坐标：保持 2D 拓扑，不做水平主链 ----
+                // 只用 BFS 标记主链，不覆盖位置
+                foreach (var compIds in components)
+                {
+                    var mainPath = FindLongestPath(compIds, coreAdj);
+                    foreach (var id in mainPath)
+                        mainChainIds.Add(id);
+                }
 
-                double width = (bounds.MaxX - bounds.MinX) + componentGap;
-                double height = (bounds.MaxY - bounds.MinY) + componentGap;
+                // 用 MSAGL 坐标作为骨架初始位置
+                foreach (var id in coreAdj.Keys)
+                {
+                    if (inputCoords.TryGetValue(id, out var pos))
+                        globalTargets[id] = pos;
+                    else
+                        globalTargets[id] = (0, 0);
+                }
+            }
+            else
+            {
+                // ---- 无输入坐标：走原始 ForceAlign 水平主链 ----
+                double cursorX = 3.0, cursorY = 3.0, rowHeight = 0;
+                double componentGap = 3.5;
 
-                double offsetX = cursorX - bounds.MinX;
-                double offsetY = cursorY - bounds.MinY;
+                foreach (var compIds in components)
+                {
+                    var (targets, bounds, mainPathSet) = LayoutComponent(
+                        compIds, coreAdj, nodeTypes, nodeRadii, sideHint, entityR, diamondR);
 
-                foreach (var kv in targets)
-                    globalTargets[kv.Key] = (kv.Value.X + offsetX, kv.Value.Y + offsetY);
-                foreach (var id in mainPathSet)
-                    mainChainIds.Add(id);
+                    double width = (bounds.MaxX - bounds.MinX) + componentGap;
+                    double height = (bounds.MaxY - bounds.MinY) + componentGap;
 
-                cursorX += width;
-                rowHeight = Math.Max(rowHeight, height);
+                    double offsetX = cursorX - bounds.MinX;
+                    double offsetY = cursorY - bounds.MinY;
+
+                    foreach (var kv in targets)
+                        globalTargets[kv.Key] = (kv.Value.X + offsetX, kv.Value.Y + offsetY);
+                    foreach (var id in mainPathSet)
+                        mainChainIds.Add(id);
+
+                    cursorX += width;
+                    rowHeight = Math.Max(rowHeight, height);
+                }
             }
 
             // ---- 全局防重叠（JS L688-720）----
@@ -138,6 +192,147 @@ namespace SqlToER.Service
                 }
                 if (maxPush < 0.01) break;
             }
+
+            // ---- 恢复主线固定位置（JS L725-728）----
+            var mainAnchorPos = new Dictionary<string, (double X, double Y)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var id in mainChainIds)
+            {
+                if (globalTargets.TryGetValue(id, out var p))
+                    mainAnchorPos[id] = p;
+            }
+
+            // ---- 同侧关系均分半圆（JS L490-528 evenSideSpacing）----
+            var entityIds2 = erDoc.Entities.Select(e => e.Name).ToList();
+            foreach (var eid in entityIds2)
+            {
+                if (!globalTargets.TryGetValue(eid, out var entityPos)) continue;
+                var relNeighbors = coreAdj.GetValueOrDefault(eid, [])
+                    .Where(id => nodeTypes.GetValueOrDefault(id) == "relationship").ToList();
+                if (relNeighbors.Count == 0) continue;
+
+                var up = new List<string>();
+                var down = new List<string>();
+                foreach (var rid in relNeighbors)
+                {
+                    int known = sideHint.GetValueOrDefault(rid, 0);
+                    int sign;
+                    if (known != 0) sign = known;
+                    else if (globalTargets.TryGetValue(rid, out var rp))
+                        sign = Math.Sign(rp.Y - entityPos.Y);
+                    else sign = 1;
+                    if (sign == 0) sign = 1;
+
+                    if (sign >= 0) up.Add(rid); else down.Add(rid);
+                }
+
+                void PlaceSide(List<string> list, int sign)
+                {
+                    if (list.Count == 0) return;
+                    double jitter = (LayoutUtils.DeterministicHash($"{eid}-{sign}") % 1000) / 1000.0 * 0.35 - 0.175;
+                    double halfStart = (sign > 0 ? 0 : Math.PI) + jitter;
+                    double step = Math.PI / (list.Count + 1);
+                    double maxRelR = list.Max(rid => nodeRadii.GetValueOrDefault(rid, diamondR));
+                    double radius = entityR + maxRelR + 0.6;
+                    var sorted = list.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToList();
+                    for (int idx = 0; idx < sorted.Count; idx++)
+                    {
+                        if (mainChainIds.Contains(sorted[idx])) continue;
+                        double ang = halfStart + step * (idx + 1);
+                        globalTargets[sorted[idx]] = (
+                            entityPos.X + Math.Cos(ang) * radius,
+                            entityPos.Y + Math.Sin(ang) * radius);
+                        sideHint[sorted[idx]] = sign;
+                    }
+                }
+
+                PlaceSide(up.Where(id => !mainChainIds.Contains(id)).ToList(), 1);
+                PlaceSide(down.Where(id => !mainChainIds.Contains(id)).ToList(), -1);
+            }
+
+            // ---- 分支重投影（JS L535-574 reprojectBranches）----
+            foreach (var eid in entityIds2)
+            {
+                if (!globalTargets.TryGetValue(eid, out var ePos)) continue;
+                var relNeighbors = coreAdj.GetValueOrDefault(eid, [])
+                    .Where(id => nodeTypes.GetValueOrDefault(id) == "relationship").ToList();
+                foreach (var rid in relNeighbors)
+                {
+                    if (!globalTargets.TryGetValue(rid, out var rPos)) continue;
+                    if (mainChainIds.Contains(rid)) continue;
+                    double ang = Math.Atan2(rPos.Y - ePos.Y, rPos.X - ePos.X);
+
+                    var neighbors = coreAdj.GetValueOrDefault(rid, [])
+                        .Where(id => nodeTypes.GetValueOrDefault(id) == "entity" &&
+                                     !id.Equals(eid, StringComparison.OrdinalIgnoreCase)).ToList();
+                    foreach (var oid in neighbors)
+                    {
+                        if (mainChainIds.Contains(oid)) continue;
+                        double oR = nodeRadii.GetValueOrDefault(oid, entityR);
+                        double rR = nodeRadii.GetValueOrDefault(rid, diamondR);
+                        double dist2 = entityR + rR + oR + 1.2;
+                        globalTargets[oid] = (
+                            ePos.X + Math.Cos(ang) * dist2,
+                            ePos.Y + Math.Sin(ang) * dist2);
+                    }
+                }
+            }
+
+            // ---- 局部三元组直线化（JS L580-611 enforceLocalTriplets）----
+            foreach (var id in coreIds)
+            {
+                if (nodeTypes.GetValueOrDefault(id) != "relationship") continue;
+                var entNeighbors = coreAdj.GetValueOrDefault(id, [])
+                    .Where(nid => nodeTypes.GetValueOrDefault(nid) == "entity").ToList();
+                if (entNeighbors.Count != 2) continue;
+                string e1 = entNeighbors[0], e2 = entNeighbors[1];
+                if (mainChainIds.Contains(e1) && mainChainIds.Contains(e2) && mainChainIds.Contains(id))
+                    continue;
+
+                if (!globalTargets.TryGetValue(id, out var pR)) continue;
+                if (!globalTargets.TryGetValue(e1, out var p1)) continue;
+                if (!globalTargets.TryGetValue(e2, out var p2)) continue;
+
+                double d1 = Math.Sqrt((pR.X - p1.X) * (pR.X - p1.X) + (pR.Y - p1.Y) * (pR.Y - p1.Y));
+                double d2 = Math.Sqrt((pR.X - p2.X) * (pR.X - p2.X) + (pR.Y - p2.Y) * (pR.Y - p2.Y));
+                var anchor = d1 <= d2 ? p1 : p2;
+                string moveTarget = d1 <= d2 ? e2 : e1;
+                if (mainChainIds.Contains(moveTarget)) continue;
+
+                double ddx = pR.X - anchor.X, ddy = pR.Y - anchor.Y;
+                double len = Math.Sqrt(ddx * ddx + ddy * ddy);
+                if (len < 0.01) len = 0.01;
+                double ux = ddx / len, uy = ddy / len;
+                double moveR = nodeRadii.GetValueOrDefault(moveTarget, entityR);
+                double relR2 = nodeRadii.GetValueOrDefault(id, diamondR);
+                globalTargets[moveTarget] = (
+                    pR.X + ux * (moveR + relR2 + 0.3),
+                    pR.Y + uy * (moveR + relR2 + 0.3));
+            }
+
+            // ---- 关系中点回正（JS L617-637 adjustRelationshipMidpoints）----
+            foreach (var id in coreIds)
+            {
+                if (nodeTypes.GetValueOrDefault(id) != "relationship") continue;
+                if (mainChainIds.Contains(id)) continue;
+                var entNeighbors = coreAdj.GetValueOrDefault(id, [])
+                    .Where(nid => nodeTypes.GetValueOrDefault(nid) == "entity").ToList();
+                if (entNeighbors.Count != 2) continue;
+                string re1 = entNeighbors[0], re2 = entNeighbors[1];
+                if (!globalTargets.TryGetValue(re1, out var rp1)) continue;
+                if (!globalTargets.TryGetValue(re2, out var rp2)) continue;
+                double rdist = Math.Sqrt((rp2.X - rp1.X) * (rp2.X - rp1.X) + (rp2.Y - rp1.Y) * (rp2.Y - rp1.Y));
+                if (rdist < 0.01) continue;
+                double r1 = nodeRadii.GetValueOrDefault(re1, entityR);
+                double r2 = nodeRadii.GetValueOrDefault(re2, entityR);
+                double rr = nodeRadii.GetValueOrDefault(id, diamondR);
+                double minSpan = r1 + r2 + rr * 2 + 0.6;
+                if (rdist < minSpan) continue;
+                globalTargets[id] = ((rp1.X + rp2.X) / 2, (rp1.Y + rp2.Y) / 2);
+            }
+
+            // ---- 恢复主线固定位置（JS L725-728）----
+            foreach (var kv in mainAnchorPos)
+                globalTargets[kv.Key] = kv.Value;
 
             // ---- 放置属性（JS L642-678）----
             var attrsByEntity = erDoc.Attributes

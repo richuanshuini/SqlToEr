@@ -554,9 +554,9 @@ namespace SqlToER.Service
 
             if (tier.UseForceAlign)
             {
-                // T2/T3: ForceAlign 骨架布局（独立计算，不需要 MSAGL）
-                onStatus?.Invoke("正在计算骨架布局（ForceAlign）...");
-                allCoords = ForceAlignLayoutService.Layout(
+                // T2/T3: MSAGL 全节点布局（entity+rel+attr 全参与 MDS，最小化边交叉）
+                onStatus?.Invoke($"正在计算全节点布局（MSAGL MDS，{erDoc.Entities.Count}实体+{erDoc.Attributes.Count}属性）...");
+                allCoords = MsaglLayoutService.CalculateLayoutAllNodes(
                     erDoc, _entityW, _entityH, _attrW, _relW, _relH);
             }
             else

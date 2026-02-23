@@ -107,5 +107,115 @@ namespace SqlToER.Service
 
             return result;
         }
+
+        /// <summary>
+        /// 全节点布局（模拟参考项目 G6 force2）——
+        /// entity + relationship + attribute 全部参与 MDS，不膨胀实体。
+        /// 节点尺寸统一：entity=140px, rel=90px, attr=90px（与参考项目 sql2er.html:308-314 一致）
+        /// </summary>
+        public static Dictionary<string, (double X, double Y)> CalculateLayoutAllNodes(
+            ErDocument erDoc,
+            double entityW, double entityH,
+            double attrW,
+            double relW, double relH)
+        {
+            var result = new Dictionary<string, (double X, double Y)>(StringComparer.OrdinalIgnoreCase);
+            if (erDoc.Entities.Count == 0) return result;
+
+            var drawingGraph = new MsaglDrawing.Graph("ER_AllNodes");
+            var nodeSizes = new Dictionary<string, (double W, double H)>(StringComparer.OrdinalIgnoreCase);
+
+            // 参考项目统一尺寸（px → pt: 1px ≈ 0.75pt）
+            const double entitySizePt = 140 * 0.75;  // 105pt
+            const double relSizePt = 90 * 0.75;      // 67.5pt
+            const double attrSizePt = 90 * 0.75;     // 67.5pt
+
+            // --- 实体节点（不膨胀，统一尺寸）---
+            foreach (var entity in erDoc.Entities)
+            {
+                var node = drawingGraph.AddNode(entity.Name);
+                node.Attr.Shape = MsaglDrawing.Shape.Box;
+                nodeSizes[entity.Name] = (entitySizePt, entitySizePt);
+            }
+
+            // --- 菱形节点 + Entity↔Diamond 连边 ---
+            for (int i = 0; i < erDoc.Relationships.Count; i++)
+            {
+                var rel = erDoc.Relationships[i];
+                string dId = $"◇{rel.Name}_{i}";
+
+                var node = drawingGraph.AddNode(dId);
+                node.Attr.Shape = MsaglDrawing.Shape.Diamond;
+                nodeSizes[dId] = (relSizePt, relSizePt);
+
+                drawingGraph.AddEdge(rel.Entity1, dId);
+                drawingGraph.AddEdge(dId, rel.Entity2);
+            }
+
+            // --- 属性节点 + Entity↔Attr 连边 ---
+            var attrsByEntity = erDoc.Attributes
+                .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var entity in erDoc.Entities)
+            {
+                var attrs = attrsByEntity.GetValueOrDefault(entity.Name, []);
+                foreach (var attr in attrs)
+                {
+                    string attrId = $"{entity.Name}.{attr.Name}";
+                    var node = drawingGraph.AddNode(attrId);
+                    node.Attr.Shape = MsaglDrawing.Shape.Circle;
+                    nodeSizes[attrId] = (attrSizePt, attrSizePt);
+
+                    drawingGraph.AddEdge(entity.Name, attrId);
+                }
+            }
+
+            // ---- 构建几何图 ----
+            drawingGraph.CreateGeometryGraph();
+
+            foreach (var drawingNode in drawingGraph.Nodes)
+            {
+                var geoNode = drawingNode.GeometryNode;
+                if (geoNode == null) continue;
+
+                if (nodeSizes.TryGetValue(drawingNode.Id, out var size))
+                {
+                    geoNode.BoundaryCurve = CurveFactory.CreateRectangle(
+                        size.W, size.H, new Point(0, 0));
+                }
+                else
+                {
+                    geoNode.BoundaryCurve = CurveFactory.CreateRectangle(
+                        attrSizePt, attrSizePt, new Point(0, 0));
+                }
+            }
+
+            // ---- MDS 布局（参考项目 force2: maxIteration=800）----
+            var settings = new MdsLayoutSettings
+            {
+                ScaleX = 1.0,
+                ScaleY = 1.0,
+                IterationsWithMajorization = 300,
+            };
+            settings.NodeSeparation = 20;  // 参考项目 nodeSpacing=20
+
+            var geometryGraph = drawingGraph.GeometryGraph;
+            LayoutHelpers.CalculateLayout(geometryGraph, settings, null);
+
+            // ---- 提取坐标 ----
+            foreach (var drawingNode in drawingGraph.Nodes)
+            {
+                var geoNode = drawingNode.GeometryNode;
+                if (geoNode == null) continue;
+
+                result[drawingNode.Id] = (
+                    geoNode.Center.X / INCH_TO_PT,
+                    geoNode.Center.Y / INCH_TO_PT
+                );
+            }
+
+            return result;
+        }
     }
 }
