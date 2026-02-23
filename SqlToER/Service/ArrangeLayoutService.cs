@@ -39,27 +39,36 @@ namespace SqlToER.Service
                 .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 
-            // ---- 轨道半径：只基于属性数量 ----
+            // ---- 轨道半径（对齐 JS L102-120：maxSatelliteRadius 含菱形）----
             var baseRing = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
             var systemRadius = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            double maxSat = Math.Max(attrR, diamondR); // JS L104: max(所有卫星半径)
 
             foreach (var e in erDoc.Entities)
             {
                 int nAttrs = attrsByEntity.GetValueOrDefault(e.Name, []).Count;
-                double ringR = entityR + attrR + 0.4;
-                if (nAttrs > 1)
+                int nRels = relConnections.Count(r =>
+                    r.E1.Equals(e.Name, StringComparison.OrdinalIgnoreCase) ||
+                    r.E2.Equals(e.Name, StringComparison.OrdinalIgnoreCase));
+                int totalSatellites = nAttrs + nRels; // JS L111: satellites.length
+
+                // JS L108: entityRadius + maxSatelliteRadius + 25px(≈0.35")
+                double ringR = entityR + maxSat + 0.4;
+                if (totalSatellites > 1)
                 {
-                    double requiredArc = attrR * 2 + 0.25;
-                    double totalCirc = nAttrs * requiredArc;
+                    // JS L112-114: requiredArcLength = maxSatelliteRadius*2 + 18
+                    double requiredArc = maxSat * 2 + 0.25;
+                    double totalCirc = totalSatellites * requiredArc;
                     double requiredR = totalCirc / (2 * Math.PI);
                     ringR = Math.Max(ringR, requiredR);
                 }
                 baseRing[e.Name] = ringR;
-                systemRadius[e.Name] = ringR + attrR;
+                systemRadius[e.Name] = ringR + maxSat; // JS L119
             }
 
             // ---- ① 弹簧迭代 ----
-            double safeGap = 0.7;
+            // safeGap 按实体数缩放（20表→1.1", 50表→1.5" capped）
+            double safeGap = Math.Min(1.5, 0.7 + erDoc.Entities.Count * 0.02);
             int springIter = Math.Min(900, 300 + erDoc.Entities.Count * 30);
 
             for (int iter = 0; iter < springIter; iter++)

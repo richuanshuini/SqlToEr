@@ -668,7 +668,11 @@ namespace SqlToER.Service
                 // 0 = 不重新放置，只路由
 
                 // 4c. 调用 Visio 内置布局引擎 — 只重排连线
-                try { _page.Layout(); } catch { }
+                // 大图(>12实体)跳过，避免 Visio 破坏算好的几何关系
+                if (erDoc.Entities.Count <= 12)
+                {
+                    try { _page.Layout(); } catch { }
+                }
             }
             catch { }
 
