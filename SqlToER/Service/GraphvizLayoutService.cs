@@ -31,9 +31,16 @@ namespace SqlToER.Service
             onStatus?.Invoke("正在生成 DOT 骨架图...");
             string dotScript = GenerateDotScript(erDoc, entityW, entityH, relW, relH, attrCounts);
 
-            // 3. 调用 sfdp.exe
-            onStatus?.Invoke("正在调用 Graphviz sfdp 引擎计算骨架布局...");
+            // DEBUG: 保存 DOT 脚本到文件
+            string debugDir = AppDomain.CurrentDomain.BaseDirectory;
+            System.IO.File.WriteAllText(System.IO.Path.Combine(debugDir, "debug_er.dot"), dotScript);
+
+            // 3. 调用 neato
+            onStatus?.Invoke("正在调用 Graphviz neato 引擎计算骨架布局...");
             string jsonOutput = ExecuteGraphviz(dotScript);
+
+            // DEBUG: 保存 JSON 输出到文件
+            System.IO.File.WriteAllText(System.IO.Path.Combine(debugDir, "debug_er.json"), jsonOutput);
 
             // 4. 解析 JSON 获取实体+菱形坐标（骨架）
             onStatus?.Invoke("正在解析 Graphviz 骨架坐标...");
@@ -62,14 +69,40 @@ namespace SqlToER.Service
             sb.AppendLine("  splines=true;");           // 曲线连线（自动避障）
             sb.AppendLine("  start=random42;");         // 固定随机种子，结果可复现
 
-            // 实体节点 —— 按属性数膨胀（预留属性环绕空间）
+            // 实体节点 —— 用 ArrangeLayout 相同的 systemRadius 计算真实占地
+            double entityR = LayoutUtils.NodeRadius(eW, eH);
+            double diamondR = LayoutUtils.NodeRadius(rW * 2, rH * 2);
+            double attrR = 0.75 / 2.0; // attrW 默认
+            double maxSat = Math.Max(attrR, diamondR);
+
+            // 统计每个实体的关系数
+            var relCountPerEntity = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var rel in erDoc.Relationships)
+            {
+                relCountPerEntity[rel.Entity1] = relCountPerEntity.GetValueOrDefault(rel.Entity1, 0) + 1;
+                relCountPerEntity[rel.Entity2] = relCountPerEntity.GetValueOrDefault(rel.Entity2, 0) + 1;
+            }
+
             foreach (var entity in erDoc.Entities)
             {
                 int nAttr = attrCounts.GetValueOrDefault(entity.Name, 0);
-                double inflatedW = eW + nAttr * 0.3;
-                double inflatedH = eH + nAttr * 0.3;
-                string w = inflatedW.ToString("F2", CultureInfo.InvariantCulture);
-                string h = inflatedH.ToString("F2", CultureInfo.InvariantCulture);
+                int nRel = relCountPerEntity.GetValueOrDefault(entity.Name, 0);
+                int totalSatellites = nAttr + nRel;
+
+                // 与 ArrangeLayoutService 完全相同的轨道计算
+                double ringR = entityR + maxSat + 0.4;
+                if (totalSatellites > 1)
+                {
+                    double requiredArc = maxSat * 2 + 0.25;
+                    double totalCirc = totalSatellites * requiredArc;
+                    double requiredR = totalCirc / (2 * Math.PI);
+                    ringR = Math.Max(ringR, requiredR);
+                }
+                double sysR = ringR + maxSat;
+
+                // Graphviz 节点尺寸 = systemRadius 直径（这才是真实占地）
+                string w = (sysR * 2).ToString("F2", CultureInfo.InvariantCulture);
+                string h = (sysR * 2).ToString("F2", CultureInfo.InvariantCulture);
                 sb.AppendLine($"  \"{EscapeDot(entity.Name)}\" [shape=box, width={w}, height={h}, fixedsize=true];");
             }
 
