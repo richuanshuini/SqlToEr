@@ -35,12 +35,15 @@ namespace SqlToER.Service
         /// <summary>
         /// 用更强参数重新布局并覆盖保存 VSDX
         /// </summary>
-        public static void OptimizeVsdx(
+        /// <param name="seedCoords">上轮坐标（首轮为 null 或首次导出返回的坐标）</param>
+        /// <returns>本轮最终坐标（供下轮使用）</returns>
+        public static Dictionary<string, (double X, double Y)> OptimizeVsdx(
             string vsdxPath,
             ErDocument erDoc,
             TemplateLayout? tpl,
             int round,
-            Action<string>? onStatus = null)
+            Action<string>? onStatus = null,
+            Dictionary<string, (double X, double Y)>? seedCoords = null)
         {
             var baseTier = LayoutTier.Detect(erDoc);
             var escalatedTier = Escalate(baseTier, round);
@@ -48,7 +51,7 @@ namespace SqlToER.Service
             onStatus?.Invoke($"🔄 第 {round} 轮优化（参数 ×{1.0 + round * 0.3:F1}）...");
 
             var service = new VisioExportService();
-            service.ExportToVsdx(erDoc, vsdxPath, tpl, onStatus, escalatedTier);
+            return service.ExportToVsdx(erDoc, vsdxPath, tpl, onStatus, escalatedTier, seedCoords);
         }
     }
 }

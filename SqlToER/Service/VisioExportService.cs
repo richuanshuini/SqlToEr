@@ -13,11 +13,13 @@ namespace SqlToER.Service
         private static readonly string[] ChenStencilNames =
             ["DBCHEN_M.VSSX", "DBCHEN_U.VSSX"];
 
-        public void ExportToVsdx(ErDocument erDoc, string savePath,
+        public Dictionary<string, (double X, double Y)> ExportToVsdx(ErDocument erDoc, string savePath,
             TemplateLayout? tpl = null,
             Action<string>? onStatus = null,
-            LayoutTier? overrideTier = null)
+            LayoutTier? overrideTier = null,
+            Dictionary<string, (double X, double Y)>? seedCoords = null)
         {
+            Dictionary<string, (double X, double Y)>? resultCoords = null;
             Visio.InvisibleApp? app = null;
             Visio.Document? doc = null;
             Visio.Document? templateStencil = null;
@@ -71,7 +73,7 @@ namespace SqlToER.Service
                 if (tpl != null)
                     painter.ApplyTemplateSizes(tpl);
 
-                painter.DrawErDiagram(erDoc, onStatus, overrideTier);
+                resultCoords = painter.DrawErDiagram(erDoc, onStatus, overrideTier, seedCoords);
 
                 CloseDoc(ref templateStencil);
                 CloseDoc(ref chenStencil);
@@ -95,6 +97,8 @@ namespace SqlToER.Service
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
             }
+
+            return resultCoords ?? new Dictionary<string, (double X, double Y)>();
         }
 
         private static Visio.Master FindMaster(Visio.Document stencil, string[] keywords)

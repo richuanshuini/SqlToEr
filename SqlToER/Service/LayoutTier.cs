@@ -64,8 +64,8 @@ namespace SqlToER.Service
                     MdsIterations = 300,
                     CollisionPadding = 0.6,
                     GlobalSepPadding = 0.25,
-                    UseGraphviz = true,         // T3: Graphviz sfdp 引擎
-                    UseForceAlign = false,       // Graphviz 替代 MSAGL
+                    UseGraphviz = false,
+                    UseForceAlign = true,        // ForceAlign → ArrangeLayout 两步法
                     UseArrangeLight = false,
                     UseVisioLayout = false,
                     SkipAttrsInMds = false,

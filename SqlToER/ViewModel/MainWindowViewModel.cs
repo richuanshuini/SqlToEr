@@ -61,6 +61,7 @@ namespace SqlToER.ViewModel
         [ObservableProperty] private int _optimizeRound;
         [ObservableProperty] private string _optimizeRoundText = "";
         private ErDocument? _lastExportedErDoc;
+        private Dictionary<string, (double X, double Y)>? _lastExportCoords; // 坐标缓存
 
         // ===== 优化轮次下拉框 =====
         public int[] OptimizeRoundOptions => [1, 2, 3, 5, 10];
@@ -78,13 +79,15 @@ namespace SqlToER.ViewModel
         {
             var service = new VisioExportService();
             var tpl = _templateLayout;
+            Dictionary<string, (double X, double Y)>? coords = null;
 
             await RunOnStaThreadAsync(() =>
-                service.ExportToVsdx(erDoc, savePath, tpl, s => UpdateStatus(s)));
+                coords = service.ExportToVsdx(erDoc, savePath, tpl, s => UpdateStatus(s)));
 
             LastExportPath = savePath;
             CanOpenFile = true;
             _lastExportedErDoc = erDoc;
+            _lastExportCoords = coords; // 缓存坐标供优化轮使用
             OptimizeRound = 0;
             OptimizeRoundText = "";
         }
@@ -315,9 +318,13 @@ namespace SqlToER.ViewModel
                     var round = OptimizeRound;
                     UpdateStatus($"🔄 正在优化第 {round} 轮（共 {OptimizeRound - 1 + totalRounds - i} 轮）...");
 
-                    await RunOnStaThreadAsync(() =>
-                        LayoutOptimizer.OptimizeVsdx(path, erDoc, tpl, round, s => UpdateStatus(s)));
+                    var seed = _lastExportCoords; // 传入上轮坐标
+                    Dictionary<string, (double X, double Y)>? newCoords = null;
 
+                    await RunOnStaThreadAsync(() =>
+                        newCoords = LayoutOptimizer.OptimizeVsdx(path, erDoc, tpl, round, s => UpdateStatus(s), seed));
+
+                    _lastExportCoords = newCoords; // 缓存本轮坐标
                     OptimizeRoundText = $"已优化 {OptimizeRound} 轮";
                 }
 

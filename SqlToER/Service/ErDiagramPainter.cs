@@ -538,7 +538,14 @@ namespace SqlToER.Service
         private record EntityPlacement(double X, double Y, double AttrAngle,
             double AttrGap = Math.PI, double DynRadius = AttrRadius);
 
-        public void DrawErDiagram(ErDocument erDoc, Action<string>? onStatus = null, LayoutTier? overrideTier = null)
+        /// <summary>
+        /// 绘制 ER 图，返回归一化前的坐标字典（供后续优化轮复用）
+        /// </summary>
+        /// <param name="seedCoords">若非 null，跳过初始布局，从种子坐标开始只跑 ArrangeLayout</param>
+        public Dictionary<string, (double X, double Y)> DrawErDiagram(
+            ErDocument erDoc, Action<string>? onStatus = null,
+            LayoutTier? overrideTier = null,
+            Dictionary<string, (double X, double Y)>? seedCoords = null)
         {
             var attrsByEntity = erDoc.Attributes
                 .GroupBy(a => a.EntityName, StringComparer.OrdinalIgnoreCase)
@@ -553,7 +560,13 @@ namespace SqlToER.Service
 
             Dictionary<string, (double X, double Y)> allCoords;
 
-            if (tier.UseGraphviz)
+            if (seedCoords != null)
+            {
+                // 优化轮次：跳过初始布局，复用上轮坐标
+                onStatus?.Invoke("优化轮次：复用上轮坐标，重新精调...");
+                allCoords = new Dictionary<string, (double X, double Y)>(seedCoords, StringComparer.OrdinalIgnoreCase);
+            }
+            else if (tier.UseGraphviz)
             {
                 // T3: Graphviz sfdp 引擎（骨架=实体+菱形，属性由 ArrangeLayout 处理）
                 onStatus?.Invoke($"启用 Graphviz sfdp 引擎计算骨架布局（{erDoc.Entities.Count}表）...");
@@ -722,6 +735,8 @@ namespace SqlToER.Service
             catch { }
 
             try { _page.AutoSizeDrawing(); } catch { }
+
+            return allCoords; // 返回归一化前的坐标，供优化轮次复用
         }
 
         /// <summary>
